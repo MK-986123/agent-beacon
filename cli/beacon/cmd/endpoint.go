@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -67,6 +68,7 @@ var endpointOpts struct {
 	contentRetention          string
 	splunkHECEndpoint         string
 	splunkHECToken            string
+	splunkHECTokenFD          int
 	splunkIndex               string
 	splunkSource              string
 	splunkSourcetype          string
@@ -74,6 +76,7 @@ var endpointOpts struct {
 	splunkCAFile              string
 	falconHECEndpoint         string
 	falconHECToken            string
+	falconHECTokenFD          int
 	falconIndex               string
 	falconSource              string
 	falconSourcetype          string
@@ -789,6 +792,9 @@ func splitHarnessCSV(value string) []string {
 func registerSplunkFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&endpointOpts.splunkHECEndpoint, "splunk-hec-endpoint", "", "Splunk HEC endpoint URL")
 	cmd.Flags().StringVar(&endpointOpts.splunkHECToken, "splunk-hec-token", "", "Splunk HEC token")
+	cmd.Flags().IntVar(&endpointOpts.splunkHECTokenFD, "splunk-hec-token-fd", -1, "Read the Splunk HEC token from an inherited file descriptor")
+	_ = cmd.Flags().MarkHidden("splunk-hec-token-fd")
+	cmd.MarkFlagsMutuallyExclusive("splunk-hec-token", "splunk-hec-token-fd")
 	cmd.Flags().StringVar(&endpointOpts.splunkIndex, "splunk-index", "", "Optional Splunk index")
 	cmd.Flags().StringVar(&endpointOpts.splunkSource, "splunk-source", endpointconfig.DefaultSplunkSource, "Optional Splunk source")
 	cmd.Flags().StringVar(&endpointOpts.splunkSourcetype, "splunk-sourcetype", endpointconfig.DefaultSplunkSourcetype, "Optional Splunk sourcetype")
@@ -799,6 +805,9 @@ func registerSplunkFlags(cmd *cobra.Command) {
 func registerFalconFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&endpointOpts.falconHECEndpoint, "falcon-hec-endpoint", "", "Falcon LogScale HEC endpoint URL")
 	cmd.Flags().StringVar(&endpointOpts.falconHECToken, "falcon-hec-token", "", "Falcon LogScale ingest token")
+	cmd.Flags().IntVar(&endpointOpts.falconHECTokenFD, "falcon-hec-token-fd", -1, "Read the Falcon LogScale ingest token from an inherited file descriptor")
+	_ = cmd.Flags().MarkHidden("falcon-hec-token-fd")
+	cmd.MarkFlagsMutuallyExclusive("falcon-hec-token", "falcon-hec-token-fd")
 	cmd.Flags().StringVar(&endpointOpts.falconIndex, "falcon-index", "", "Optional Falcon LogScale repository for multi-repository tokens")
 	cmd.Flags().StringVar(&endpointOpts.falconSource, "falcon-source", endpointconfig.DefaultFalconSource, "Optional Falcon LogScale source")
 	cmd.Flags().StringVar(&endpointOpts.falconSourcetype, "falcon-sourcetype", endpointconfig.DefaultFalconSourcetype, "Optional Falcon LogScale parser or sourcetype")
@@ -915,6 +924,65 @@ func splunkHECOptions() *endpointconfig.SplunkHEC {
 		InsecureSkipVerify: endpointOpts.splunkInsecureSkipVerify,
 		CAFile:             endpointOpts.splunkCAFile,
 	}
+}
+
+const maxForwardingTokenBytes = 64 * 1024
+
+// resolveForwardingTokens consumes package-provided token descriptors before install or repair
+// starts. Package wrappers use descriptors rather than command-line values so a local process
+// listing cannot disclose the forwarding credentials.
+func resolveForwardingTokens() error {
+	var err error
+	endpointOpts.splunkHECToken, err = forwardingTokenFromFD(
+		endpointOpts.splunkHECToken,
+		endpointOpts.splunkHECTokenFD,
+		"--splunk-hec-token",
+		"--splunk-hec-token-fd",
+	)
+	if err != nil {
+		return err
+	}
+	endpointOpts.splunkHECTokenFD = -1
+
+	endpointOpts.falconHECToken, err = forwardingTokenFromFD(
+		endpointOpts.falconHECToken,
+		endpointOpts.falconHECTokenFD,
+		"--falcon-hec-token",
+		"--falcon-hec-token-fd",
+	)
+	if err != nil {
+		return err
+	}
+	endpointOpts.falconHECTokenFD = -1
+	return nil
+}
+
+func forwardingTokenFromFD(token string, fd int, tokenFlag, fdFlag string) (string, error) {
+	if fd == -1 {
+		return token, nil
+	}
+	if token != "" {
+		return "", fmt.Errorf("%s cannot be combined with %s", tokenFlag, fdFlag)
+	}
+	if fd < 3 {
+		return "", fmt.Errorf("%s must name an inherited descriptor greater than 2", fdFlag)
+	}
+
+	file := os.NewFile(uintptr(fd), fdFlag)
+	if file == nil {
+		return "", fmt.Errorf("read %s: invalid file descriptor %d", fdFlag, fd)
+	}
+	defer file.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(file, maxForwardingTokenBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", fdFlag, err)
+	}
+	if len(raw) > maxForwardingTokenBytes {
+		return "", fmt.Errorf("read %s: token exceeds %d bytes", fdFlag, maxForwardingTokenBytes)
+	}
+	// The package wrappers use here-documents, which add one line ending after the exact token.
+	return strings.TrimSuffix(string(raw), "\n"), nil
 }
 
 func falconHECOptions() *endpointconfig.FalconHEC {

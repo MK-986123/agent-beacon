@@ -2,6 +2,7 @@ package asymptoteobserve
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,136 @@ import (
 	"sync"
 	"testing"
 )
+
+func TestJSONLSinkCreatesOwnerOnlyStorage(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "private", "nested")
+	path := filepath.Join(parent, "events.jsonl")
+	sink := NewJSONLSink(path)
+	event := NewEvent(NewEventOptions{Action: "tool.invoked", Harness: HarnessInfo{Name: "cursor"}})
+
+	if err := sink.WriteBatch(context.Background(), []Event{event}); err != nil {
+		t.Fatalf("WriteBatch returned error: %v", err)
+	}
+	if os.PathSeparator != '/' {
+		return
+	}
+	for _, check := range []struct {
+		path string
+		mode os.FileMode
+	}{
+		{filepath.Join(root, "private"), 0o700},
+		{parent, 0o700},
+		{path, 0o600},
+	} {
+		info, err := os.Stat(check.path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", check.path, err)
+		}
+		if got := info.Mode().Perm(); got != check.mode {
+			t.Fatalf("mode of %s = %o, want %o", check.path, got, check.mode)
+		}
+	}
+}
+
+func TestJSONLSinkTightensExistingFileBeforeAppending(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	existing := []byte("{\"existing\":true}\n")
+	if err := os.WriteFile(path, existing, 0o644); err != nil {
+		t.Fatalf("write existing JSONL: %v", err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("set existing JSONL mode: %v", err)
+	}
+
+	sink := NewJSONLSink(path)
+	event := NewEvent(NewEventOptions{Action: "tool.invoked", Harness: HarnessInfo{Name: "cursor"}})
+	if err := sink.WriteBatch(context.Background(), []Event{event}); err != nil {
+		t.Fatalf("WriteBatch returned error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read JSONL: %v", err)
+	}
+	if !bytes.HasPrefix(data, existing) {
+		t.Fatalf("existing JSONL was not preserved: %q", data)
+	}
+	if os.PathSeparator == '/' {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat JSONL: %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("existing JSONL mode = %o, want 600", got)
+		}
+	}
+}
+
+func TestJSONLSinkRedactsSecretsAtPersistenceBoundary(t *testing.T) {
+	const secret = "visible-without-privacy"
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	sink := NewJSONLSink(path)
+	event := NewEvent(NewEventOptions{
+		Action:  "command.executed",
+		Harness: HarnessInfo{Name: "cursor"},
+		Message: "token=" + secret,
+	})
+	event.Raw = map[string]interface{}{
+		"authorization": "Bearer " + secret,
+		"task":          "summarize this",
+	}
+
+	if err := sink.WriteBatch(context.Background(), []Event{event}); err != nil {
+		t.Fatalf("WriteBatch returned error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read JSONL: %v", err)
+	}
+	if bytes.Contains(data, []byte(secret)) {
+		t.Fatalf("JSONL contains unredacted secret: %s", data)
+	}
+	var written Event
+	if err := json.Unmarshal(bytes.TrimSpace(data), &written); err != nil {
+		t.Fatalf("unmarshal JSONL: %v", err)
+	}
+	if written.Event.Action != event.Event.Action || written.Raw["task"] != "summarize this" {
+		t.Fatalf("legitimate event data changed: %#v", written)
+	}
+}
+
+func TestJSONLSinkFitsFinalRecordSize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	sink := NewJSONLSink(path)
+	event := NewEvent(NewEventOptions{Action: "tool.invoked", Harness: HarnessInfo{Name: "cursor"}})
+	values := make([]interface{}, 40)
+	for i := range values {
+		values[i] = strings.Repeat("x", DefaultRawStringLimit)
+	}
+	event.Raw = map[string]interface{}{"values": values}
+
+	if err := sink.WriteBatch(context.Background(), []Event{event}); err != nil {
+		t.Fatalf("WriteBatch returned error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read JSONL: %v", err)
+	}
+	if got := bytes.Count(data, []byte{'\n'}); got != 1 {
+		t.Fatalf("JSONL newline count = %d, want 1", got)
+	}
+	line := bytes.TrimSuffix(data, []byte{'\n'})
+	if len(line) > DefaultMaxEventBytes {
+		t.Fatalf("JSONL line = %d bytes, want at most %d", len(line), DefaultMaxEventBytes)
+	}
+	var written Event
+	if err := json.Unmarshal(line, &written); err != nil {
+		t.Fatalf("unmarshal JSONL: %v", err)
+	}
+	if written.Event.Action != event.Event.Action || !written.Truncated {
+		t.Fatalf("fitted event lost identity or truncation marker: %#v", written)
+	}
+}
 
 func TestJSONLSinkWritesCanonicalEvents(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "events.jsonl")

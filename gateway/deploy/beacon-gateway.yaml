@@ -56,9 +56,15 @@ content:
   retention: full
 
 # Each output receives the record kinds listed (all kinds if none): beacon.event (lines in
-# runtime.jsonl's schema; `beacon scan --log-path` reads them) and finding.
+# runtime.jsonl's schema; `beacon scan --log-path` reads them) and finding. JSONL outputs rotate
+# at 10 MiB and retain five archives by default; set positive values here to choose smaller or
+# larger bounds. A batch is kept whole, so one batch may exceed rotate_bytes.
 outputs:
   - jsonl: gateway-events.jsonl
+    rotate_bytes: 10485760
+    rotate_archives: 5
     kinds: [beacon.event]
   - jsonl: gateway-findings.jsonl
+    rotate_bytes: 10485760
+    rotate_archives: 5
     kinds: [finding]

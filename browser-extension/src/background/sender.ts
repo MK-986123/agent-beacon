@@ -35,12 +35,12 @@ export function isOwnContentScript(sender: SenderLike, runtimeId: string): boole
   return !!runtimeId && sender.id === runtimeId && typeof sender.tab?.id === 'number';
 }
 
-/** The host of the frame that sent a relay message, from the browser's own
- *  record of the sender rather than from the message body. */
-export function senderHost(sender: SenderLike): string | null {
+/** The browser-authenticated origin of the frame that sent a relay message. */
+export function senderOrigin(sender: SenderLike): string | null {
   if (typeof sender.url !== 'string') return null;
   try {
-    return new URL(sender.url).host || null;
+    const url = new URL(sender.url);
+    return url.protocol === 'https:' && url.host !== '' ? url.origin : null;
   } catch {
     return null;
   }

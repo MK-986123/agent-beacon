@@ -64,6 +64,10 @@ Run over loopback HTTP JSON-RPC:
 beacon mcp serve --transport http --addr 127.0.0.1:8766
 ```
 
+Each HTTP run prints a fresh `Authorization: Bearer ...` credential to stderr. Copy that
+complete header into the local client's configuration and send it with every `/mcp` request.
+Beacon does not persist the credential, and a credential from an earlier run is not accepted.
+
 Use a specific runtime log:
 
 ```bash title="Use a specific runtime log"
@@ -74,11 +78,12 @@ beacon mcp serve --log-path /path/to/runtime.jsonl
 
 | Path | Description |
 |------|-------------|
-| `/mcp` | MCP JSON-RPC endpoint |
-| `/health` | Local health check endpoint |
+| `/mcp` | MCP JSON-RPC endpoint; requires the current run's Bearer credential |
+| `/health` | Local health check endpoint; does not require a credential |
 
 <Warning>
-  Do not bind HTTP transport to a non-loopback interface. Beacon MCP is designed for local activity inspection, not remote administration.
+  Keep HTTP transport on loopback and protect the printed credential. Loopback limits network
+  origin but does not identify which local account made a request.
 </Warning>
 
 ## Related

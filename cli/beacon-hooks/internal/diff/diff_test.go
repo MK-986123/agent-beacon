@@ -381,3 +381,51 @@ func TestEditFragmentsDoNotClaimEndOfFile(t *testing.T) {
 		t.Fatalf("partial edit claims EOF: %s", got)
 	}
 }
+
+func TestDiffConstructorsBoundOversizedContent(t *testing.T) {
+	large := strings.Repeat("x", maxDiffBytes*2)
+	cases := []struct {
+		name  string
+		build func() string
+	}{
+		{"whole-file content", func() string { return FromContentChange("/repo/a.go", "old", large) }},
+		{"edit fragment", func() string { return FromEditFragments("/repo/a.go", "old", large) }},
+		{"cursor edits", func() string {
+			return FromCursorEdits("/repo/a.go", []interface{}{map[string]interface{}{
+				"old_string": "old", "new_string": large,
+			}})
+		}},
+		{"multi edit", func() string {
+			return FromToolResponse("MultiEdit", map[string]interface{}{
+				"file_path": "/repo/a.go",
+				"edits": []interface{}{map[string]interface{}{
+					"old_string": "old", "new_string": large,
+				}},
+			}, nil)
+		}},
+		{"structured patch", func() string {
+			return FromToolResponse("Edit", map[string]interface{}{"file_path": "/repo/a.go"}, map[string]interface{}{
+				"structuredPatch": []interface{}{map[string]interface{}{
+					"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
+					"lines": []interface{}{"+" + large},
+				}},
+			})
+		}},
+		{"copilot patch", func() string {
+			return FromToolResponse("apply_patch", map[string]interface{}{
+				"file_path": "/repo/a.go", "input": large,
+			}, nil)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.build()
+			if len(got) > maxDiffBytes {
+				t.Fatalf("diff has %d bytes, exceeds %d", len(got), maxDiffBytes)
+			}
+			if !strings.HasSuffix(got, diffTruncatedMarker) {
+				t.Fatalf("oversized diff did not record truncation: %q", got)
+			}
+		})
+	}
+}

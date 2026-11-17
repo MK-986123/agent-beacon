@@ -7,7 +7,7 @@
 //
 // This script never listens to window messages: any page script can post one.
 
-import type { RelayMessage } from '../shared/types.js';
+import type { CaptureControl, RelayMessage, RelayResponse } from '../shared/types.js';
 import { ext } from '../shared/browser.js';
 import { acceptChannel, type ChannelHost } from '../shared/channel.js';
 import { parseInterceptEvent } from '../shared/validate.js';
@@ -29,7 +29,7 @@ function extensionAlive(): boolean {
 
 let warnedInvalidated = false;
 
-function relay(raw: unknown): void {
+function relay(raw: unknown, port: MessagePort): void {
   // The interceptor sends JSON strings; anything else did not come from it.
   if (typeof raw !== 'string') return;
   let parsed: unknown;
@@ -54,17 +54,25 @@ function relay(raw: unknown): void {
     host: window.location.host,
     event,
   };
-  // Fire-and-forget; the SW may be asleep and will wake to handle it. Wrap in
-  // try/catch in case the context is invalidated between the check and the call.
+  // The SW response is normally empty. A parser or budget rejection returns the
+  // request id so the MAIN-world interceptor can cancel its cloned reader.
   try {
-    void ext.runtime.sendMessage(message).catch(() => {
-      /* SW not ready / extension reloading — safe to drop a single event */
-    });
+    void ext.runtime
+      .sendMessage(message)
+      .then((response: unknown) => {
+        const cancel = (response as Partial<RelayResponse> | null)?.cancel;
+        if (cancel !== event.reqId) return;
+        const control: CaptureControl = { kind: 'cancel', reqId: cancel };
+        port.postMessage(JSON.stringify(control));
+      })
+      .catch(() => {
+        /* SW not ready / extension reloading — safe to drop a single event */
+      });
   } catch {
     /* context invalidated mid-flight */
   }
 }
 
 acceptChannel(window as unknown as ChannelHost, (port) => {
-  port.onmessage = (event: MessageEvent) => relay(event.data);
+  port.onmessage = (event: MessageEvent) => relay(event.data, port);
 });

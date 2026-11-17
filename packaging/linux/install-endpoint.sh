@@ -164,7 +164,14 @@ case "$BEACON_SESSION_SYNC" in
 esac
 
 [ -n "$BEACON_SPLUNK_HEC_ENDPOINT" ] && set -- "$@" --splunk-hec-endpoint "$BEACON_SPLUNK_HEC_ENDPOINT"
-[ -n "$BEACON_SPLUNK_HEC_TOKEN" ] && set -- "$@" --splunk-hec-token "$BEACON_SPLUNK_HEC_TOKEN"
+# The CLI consumes this inherited descriptor before installing; the token never enters child argv.
+if [ -n "$BEACON_SPLUNK_HEC_TOKEN" ]; then
+  exec 3<<EOF
+$BEACON_SPLUNK_HEC_TOKEN
+EOF
+  set -- "$@" --splunk-hec-token-fd 3
+fi
+unset BEACON_SPLUNK_HEC_TOKEN
 [ -n "$BEACON_SPLUNK_INDEX" ] && set -- "$@" --splunk-index "$BEACON_SPLUNK_INDEX"
 [ -n "$BEACON_SPLUNK_SOURCE" ] && set -- "$@" --splunk-source "$BEACON_SPLUNK_SOURCE"
 [ -n "$BEACON_SPLUNK_SOURCETYPE" ] && set -- "$@" --splunk-sourcetype "$BEACON_SPLUNK_SOURCETYPE"

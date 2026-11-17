@@ -99,3 +99,14 @@ export interface RelayMessage {
   host: string;
   event: InterceptEvent;
 }
+
+/** Synchronous service-worker response when a capture must stop. */
+export interface RelayResponse {
+  cancel: string;
+}
+
+/** Sent over the private channel to cancel the interceptor's cloned reader. */
+export interface CaptureControl {
+  kind: 'cancel';
+  reqId: string;
+}

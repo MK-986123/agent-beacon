@@ -12,7 +12,10 @@ export const LIMITS = Object.freeze({
   method: 16,
   /** Request bodies carry the whole conversation on some sites. */
   body: 8 * 1024 * 1024,
-  chunk: 4 * 1024 * 1024,
+  // The interceptor splits decoded network chunks to this relay-message cap.
+  chunk: 256 * 1024,
+  /** Total decoded response characters captured for one request. */
+  stream: 16 * 1024 * 1024,
   message: 4 * 1024,
   host: 253,
 });

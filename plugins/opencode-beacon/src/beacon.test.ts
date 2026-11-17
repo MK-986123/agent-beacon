@@ -106,6 +106,28 @@ describe("BeaconEndpointPlugin", () => {
     ])
   })
 
+  test("bounds accumulated text deltas before forwarding", async () => {
+    const hooks = await plugin()
+    await hooks.event!({ event: { type: "message.updated", properties: { sessionID: "ses_stream", info: { id: "msg_stream", role: "assistant" } } } } as any)
+    await hooks.event!({ event: { type: "message.part.updated", properties: { sessionID: "ses_stream", part: { id: "part_stream", messageID: "msg_stream", type: "text", text: "", time: { start: 1 } } } } } as any)
+    await hooks.event!({ event: { type: "message.part.delta", properties: { sessionID: "ses_stream", messageID: "msg_stream", partID: "part_stream", field: "text", delta: "x".repeat(70 * 1024) } } } as any)
+    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "ses_stream" } } } as any)
+    await hooks["command.execute.before"]!({ sessionID: "ses_stream", command: "drain" }, {})
+
+    const text = payloads.find(item => item.type === "message.part.updated")?.part?.text
+    expect(text).toHaveLength(64 * 1024)
+    expect(text?.endsWith("...[truncated by Beacon]")).toBe(true)
+  })
+
+  test("drops oversized tool inputs without interrupting the runtime", async () => {
+    const hooks = await plugin()
+    await expect(hooks["tool.execute.before"]!(
+      { tool: "write", sessionID: "ses_1", callID: "call_large" },
+      { args: { content: "x".repeat(70 * 1024) } },
+    )).resolves.toBeUndefined()
+    expect(payloads).toEqual([])
+  })
+
   test("prefers a completed authoritative snapshot over earlier deltas", async () => {
     const hooks = await plugin()
     await hooks.event!({ event: { type: "message.updated", properties: { sessionID: "ses_stream", info: { id: "msg_stream", role: "assistant" } } } } as any)

@@ -123,13 +123,14 @@ beacon_installer_app_running() {
   return 1
 }
 
-# beacon_installing_person prints the account of the person who ran this install in Installer.app,
-# or nothing for an unattended install. `installer` (which MDM agents and scripts run) sets
-# COMMAND_LINE_INSTALL; a person double-clicking the package does it in Installer.app, the console
-# user's own session, which beacon_installer_app_running checks by the executable rather than by a
-# process name. Both must hold, so an MDM install that happens while someone is logged in adds
-# nobody. MDM InstallApplication never sets COMMAND_LINE_INSTALL, so a fleet that does not want even
-# that check deciding sets BEACON_LOG_READERS to an empty string in its profile.
+# beacon_installing_person prints a console-account hint when this install resembles one started in
+# Installer.app, or nothing when it resembles an unattended install. `installer` (which many MDM
+# agents and scripts run) sets COMMAND_LINE_INSTALL; a person double-clicking the package does it in
+# Installer.app, which beacon_installer_app_running checks by executable rather than process name.
+#
+# This is only a hint for the dashboard's first-install default. It is not transaction-bound: MDM
+# InstallApplication may omit COMMAND_LINE_INSTALL, and an unrelated Installer.app may be running.
+# It must therefore never authorize log access or any other durable privilege.
 beacon_installing_person() {
   [ -z "${COMMAND_LINE_INSTALL:-}" ] || return 0
   _beacon_console="${BEACON_CONSOLE_USER:-$(stat -f '%Su' /dev/console 2>/dev/null || true)}"

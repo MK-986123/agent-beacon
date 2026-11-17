@@ -14,6 +14,10 @@ import (
 // This file is how SanitizeEvent (privacy.go) sanitizes the typed parts of an event and decides
 // whether it is too large:
 //
+//   - Every serialized typed string outside Raw and GenAI is copied and cleaned by
+//     sanitizeEventTypedStrings. That reflection-backed fallback makes a new typed event field safe
+//     by default instead of depending on a second manually maintained field list. The specialized
+//     sanitizers below then apply their narrower metadata limits.
 //   - MCP, SystemContext and GenAI are converted field by field into what a JSON round trip
 //     (marshal, decode into a map, SanitizeMap, marshal, decode back into the type) leaves of
 //     them (genericSanitizer). A value JSON cannot represent, which made that round trip fail, is
@@ -71,6 +75,64 @@ const maxGenericDepth = 100
 // (TestTypedFieldNamesAreNotSecret).
 func (g genericSanitizer) text(s string) string {
 	return CleanString(jsonString(s), g.opts.StringLimit, g.opts.RedactSecrets)
+}
+
+// sanitizeEventTypedStrings returns a copy of event with every serialized typed string cleaned.
+// Raw and GenAI stay attached to the original until their shape-aware sanitizers run: Raw needs
+// secret field names and list flags considered, while GenAI has interface values and an optional
+// longer browser-answer limit. DefaultStringLimit is the fallback so existing retained-content
+// limits are not narrowed; SanitizeEventWith applies the tighter metadata limits afterwards.
+func sanitizeEventTypedStrings(event Event, redactSecrets bool) Event {
+	genAI, raw := event.GenAI, event.Raw
+	event.GenAI, event.Raw = nil, nil
+	g := newGenericSanitizer(PrivacyOptions{RedactSecrets: redactSecrets, StringLimit: DefaultStringLimit})
+	sanitizeTypedStrings(reflect.ValueOf(&event).Elem(), g)
+	event.GenAI, event.Raw = genAI, raw
+	return event
+}
+
+// sanitizeTypedStrings cleans the event copy, cloning pointers and slices before changing their
+// contents. Strings are set in place instead of allocating a reflection value for every leaf.
+// Maps and interfaces retain their shape-aware sanitizers; json:"-" fields are never serialized.
+func sanitizeTypedStrings(v reflect.Value, g genericSanitizer) {
+	switch v.Kind() {
+	case reflect.String:
+		v.SetString(g.text(v.String()))
+	case reflect.Pointer:
+		if v.IsNil() {
+			return
+		}
+		out := reflect.New(v.Type().Elem())
+		out.Elem().Set(v.Elem())
+		sanitizeTypedStrings(out.Elem(), g)
+		v.Set(out)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			field := v.Type().Field(i)
+			if !field.IsExported() {
+				continue
+			}
+			name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+			if name == "-" {
+				continue
+			}
+			sanitizeTypedStrings(v.Field(i), g)
+		}
+	case reflect.Slice:
+		if v.IsNil() {
+			return
+		}
+		out := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+		reflect.Copy(out, v)
+		for i := range v.Len() {
+			sanitizeTypedStrings(out.Index(i), g)
+		}
+		v.Set(out)
+	case reflect.Array:
+		for i := range v.Len() {
+			sanitizeTypedStrings(v.Index(i), g)
+		}
+	}
 }
 
 // jsonString is s as the encoder writes it and the decoder reads it back: each byte that is not

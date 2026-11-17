@@ -24,14 +24,14 @@ export const repoRoot = resolve(pluginsDir, "..")
 export const canonicalPath = join(import.meta.dir, "safe-clone.ts")
 const assetsDir = join(repoRoot, "cli/beacon/internal/endpoint/hooks/assets")
 
-// Every plugin that runs the shared serializer: its source and the copy embedded in the binary.
-// OpenCode is deliberately absent: it never serializes a live payload with safeClone, and its
-// structuredClone calls snapshot tool arguments for its own bookkeeping, where a depth limit or a
-// flattened Error would lose state the plugin reads back later.
+// Every plugin that runs the shared serializer at its outbound hook boundary: its source and the
+// copy embedded in the binary. OpenCode also uses it for bounded internal snapshots before those
+// values reach sendToBeacon.
 export const consumers = [
   { plugin: "cline-beacon", source: "src/beacon.ts", embedded: "cline/beacon.ts" },
   { plugin: "omo-beacon", source: "src/beacon.ts", embedded: "omo/beacon.ts" },
   { plugin: "omp-beacon", source: "src/beacon.ts", embedded: "omp/beacon.ts" },
+  { plugin: "opencode-beacon", source: "src/beacon.ts", embedded: "opencode/beacon.ts" },
   { plugin: "openclaw-beacon", source: "src/beacon.js", embedded: "openclaw/beacon.js" },
   { plugin: "pi-beacon", source: "src/beacon.ts", embedded: "pi/beacon.ts" },
   { plugin: "prime-beacon", source: "src/beacon.ts", embedded: "prime/beacon.ts" },
@@ -46,8 +46,24 @@ export const consumers = [
 // the sync instead of writing TypeScript into a .js file.
 export const jsRewrites: ReadonlyArray<readonly [string, string]> = [
   [
-    "function safeClone(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {",
-    "function safeClone(value, depth = 0, seen = new WeakSet()) {",
+    "function chargePayload(budget: { nodes: number; bytes: number }, bytes: number): void {",
+    "function chargePayload(budget, bytes) {",
+  ],
+  [
+    "  value: unknown,",
+    "  value,",
+  ],
+  [
+    "  seen = new WeakSet<object>(),",
+    "  seen = new WeakSet(),",
+  ],
+  [
+    "): unknown {",
+    ") {",
+  ],
+  [
+    "    const record: Record<string, unknown> = value as Record<string, unknown>",
+    "    const record = value",
   ],
   ["    const out: Record<string, unknown> = {}", "    const out = {}"],
 ]

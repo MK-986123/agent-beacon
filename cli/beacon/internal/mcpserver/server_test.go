@@ -49,7 +49,8 @@ func TestServeStdioListsAndCallsTools(t *testing.T) {
 func TestHTTPHandlerHealthAndMCP(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.jsonl")
 	writeTestLog(t, path, testEvent("2026-05-13T01:00:00Z", "cursor", "prompt.submitted", "prompt"))
-	handler := New(Options{LogPath: path}).HTTPHandler()
+	const token = "current-launch-token"
+	handler := New(Options{LogPath: path}).HTTPHandler(token)
 
 	health := httptest.NewRecorder()
 	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
@@ -57,7 +58,40 @@ func TestHTTPHandlerHealthAndMCP(t *testing.T) {
 		t.Fatalf("health status = %d, want 200", health.Code)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":"a","method":"tools/call","params":{"name":"summarize_activity","arguments":{}}}`))
+	requestBody := `{"jsonrpc":"2.0","id":"a","method":"tools/call","params":{"name":"summarize_activity","arguments":{}}}`
+	for _, tc := range []struct {
+		name          string
+		authorization string
+	}{
+		{name: "missing credential"},
+		{name: "earlier run credential", authorization: "Bearer earlier-launch-token"},
+		{name: "other scheme", authorization: "Basic current-launch-token"},
+		{name: "credential suffix", authorization: "Bearer current-launch-token extra"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(requestBody))
+			if tc.authorization != "" {
+				req.Header.Set("Authorization", tc.authorization)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized || strings.Contains(rec.Body.String(), "total_events") {
+				t.Fatalf("unauthorized MCP request = %d %q", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	duplicate := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(requestBody))
+	duplicate.Header.Add("Authorization", "Bearer "+token)
+	duplicate.Header.Add("Authorization", "Bearer "+token)
+	duplicateRec := httptest.NewRecorder()
+	handler.ServeHTTP(duplicateRec, duplicate)
+	if duplicateRec.Code != http.StatusUnauthorized {
+		t.Fatalf("duplicate Authorization headers status = %d, want 401", duplicateRec.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(requestBody))
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

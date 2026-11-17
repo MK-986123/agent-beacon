@@ -78,12 +78,17 @@ func runMCPServe(cmd *cobra.Command, args []string) error {
 		if err := dashboard.ValidateLoopbackAddr(mcpOpts.addr); err != nil {
 			return err
 		}
+		token, err := dashboard.NewToken()
+		if err != nil {
+			return fmt.Errorf("generate MCP launch token: %w", err)
+		}
 		fmt.Fprintf(os.Stderr, "Beacon MCP server: http://%s/mcp\n", mcpOpts.addr)
+		fmt.Fprintf(os.Stderr, "Authorization: Bearer %s\n", token)
 		fmt.Fprintf(os.Stderr, "Runtime log: %s\n", runtimeLog.EffectiveLogPath)
 		ctx := cmd.Context()
 		httpServer := &http.Server{
 			Addr:              mcpOpts.addr,
-			Handler:           dashboard.RequireLoopbackHost(server.HTTPHandler()),
+			Handler:           dashboard.RequireLoopbackHost(server.HTTPHandler(token)),
 			ReadHeaderTimeout: 5 * time.Second,
 			BaseContext:       func(_ net.Listener) context.Context { return ctx },
 		}
@@ -93,7 +98,7 @@ func runMCPServe(cmd *cobra.Command, args []string) error {
 			defer cancel()
 			httpServer.Shutdown(shutdownCtx)
 		}()
-		err := httpServer.ListenAndServe()
+		err = httpServer.ListenAndServe()
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}

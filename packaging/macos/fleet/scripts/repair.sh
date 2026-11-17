@@ -30,9 +30,14 @@ set -- endpoint repair \
 if [ -n "$BEACON_SPLUNK_HEC_ENDPOINT" ]; then
   set -- "$@" --splunk-hec-endpoint "$BEACON_SPLUNK_HEC_ENDPOINT"
 fi
+# The CLI consumes these inherited descriptors before repairing; tokens never enter child argv.
 if [ -n "$BEACON_SPLUNK_HEC_TOKEN" ]; then
-  set -- "$@" --splunk-hec-token "$BEACON_SPLUNK_HEC_TOKEN"
+  exec 3<<EOF
+$BEACON_SPLUNK_HEC_TOKEN
+EOF
+  set -- "$@" --splunk-hec-token-fd 3
 fi
+unset BEACON_SPLUNK_HEC_TOKEN
 if [ -n "$BEACON_SPLUNK_INDEX" ]; then
   set -- "$@" --splunk-index "$BEACON_SPLUNK_INDEX"
 fi
@@ -55,8 +60,12 @@ if [ -n "$BEACON_FALCON_HEC_ENDPOINT" ]; then
   set -- "$@" --falcon-hec-endpoint "$BEACON_FALCON_HEC_ENDPOINT"
 fi
 if [ -n "$BEACON_FALCON_HEC_TOKEN" ]; then
-  set -- "$@" --falcon-hec-token "$BEACON_FALCON_HEC_TOKEN"
+  exec 4<<EOF
+$BEACON_FALCON_HEC_TOKEN
+EOF
+  set -- "$@" --falcon-hec-token-fd 4
 fi
+unset BEACON_FALCON_HEC_TOKEN
 if [ -n "$BEACON_FALCON_INDEX" ]; then
   set -- "$@" --falcon-index "$BEACON_FALCON_INDEX"
 fi

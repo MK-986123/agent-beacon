@@ -137,6 +137,27 @@ func TestJSONLWriterSanitizesRunAndMetadata(t *testing.T) {
 	}
 }
 
+func TestJSONLWriterRedactsPromotedErrorType(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.jsonl")
+	writer := jsonlWriter{path: path, maxEventBytes: defaultMaxEventBytes, rotateBytes: defaultRotateBytes, rotateArchives: defaultRotateArchives, redactSecrets: true}
+	event := newBeaconEvent("session.error", "session", "info", "test", time.Now())
+	event.Error = &beaconevent.ErrorInfo{Type: "token=typed-error-secret-0123456789"}
+
+	if err := writer.append(event); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	stored := readEvent(t, path)
+	if strings.Contains(readLog(t, path), "typed-error-secret") {
+		t.Fatalf("error.type credential reached the runtime log: %s", readLog(t, path))
+	}
+	if stored.Error == nil {
+		t.Fatal("stored error block was dropped")
+	}
+	if stored.Error.Type != "token=[REDACTED]" {
+		t.Fatalf("stored error.type = %q, want the credential redacted", stored.Error.Type)
+	}
+}
+
 func TestIntAttrRejectsOutOfRangeString(t *testing.T) {
 	attrs := map[string]interface{}{"value": "9223372036854775808"}
 	if got, ok := intAttr(attrs, "value"); ok {

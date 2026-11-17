@@ -34,7 +34,7 @@ For deployment across machines, use the signed, notarized, and stapled `.pkg` at
 
 The package also configures the console user's agent runtime, because a system endpoint runs as root and the collector is useless if nothing is exporting to it.
 
-A first install from the package sets up [restricted log access](/security/restricted-log-access): only the collector writes the log, and only root and the `beacon-log` group can read it. An upgrade keeps the mode the endpoint already has. A person who installs the package in Installer.app is added to `beacon-log`, so the dashboard, `beacon traces` and `beacon share` work for them after they log in again; an MDM install adds nobody and turns the [local dashboard](/cli/dashboard#turning-the-dashboard-off) off, unless `BEACON_DASHBOARD=enabled` is set. See [Package installs](/security/restricted-log-access#package-installs).
+A first install from the package sets up [restricted log access](/security/restricted-log-access): only the collector writes the log, and only root and the `beacon-log` group can read it. An upgrade keeps the mode the endpoint already has. The package adds no reader implicitly, even when Installer.app is open, because that process cannot be bound to the current package transaction. Set `BEACON_LOG_READERS` to the accounts that should read the log. An MDM install turns the [local dashboard](/cli/dashboard#turning-the-dashboard-off) off unless `BEACON_DASHBOARD=enabled` is set. See [Package installs](/security/restricted-log-access#package-installs).
 
 ### Settings for MDM installs
 
@@ -53,7 +53,7 @@ An MDM installs the package without letting you set the environment of its insta
 </dict>
 ```
 
-An empty `BEACON_LOG_READERS` means nobody is added to `beacon-log` implicitly. Without an MDM, write the same keys to the local preferences as an administrator, before installing:
+An empty or unset `BEACON_LOG_READERS` adds nobody to `beacon-log`; a non-empty value is the complete reader list. Without an MDM, write the same keys to the local preferences as an administrator, before installing:
 
 ```bash title="Local install settings"
 sudo defaults write /Library/Preferences/com.beacon.endpoint BEACON_LOG_ACCESS restricted

@@ -91,11 +91,12 @@ The `.deb` and `.rpm`, the macOS `.pkg` and the Windows MSI follow the same rule
 
 | Installed by | How the install recognizes it | Added to `beacon-log` |
 |---|---|---|
-| Fleet tooling, unattended (Salt, Ansible, Jamf, Kandji, Intune, SCCM) | Linux: root with no `SUDO_USER`, or sudo with no terminal or under `DEBIAN_FRONTEND=noninteractive` (Ansible `become`, a Packer sudo provisioner). macOS: `installer` (sets `COMMAND_LINE_INSTALL`). Windows: a silent MSI (`msiexec /qn`) | Nobody |
-| A person, as an administrator | Linux: `sudo apt install` or `sudo dpkg -i` at a terminal. macOS: Apple's Installer.app, running as the logged-in user. Windows: the installer's full interface | That person, so the dashboard, `beacon traces` and `beacon share` work for them after they log in again |
+| Fleet tooling, unattended (Salt, Ansible, Jamf, Kandji, Intune, SCCM) | Linux: root with no `SUDO_USER`, or sudo with no terminal or under `DEBIAN_FRONTEND=noninteractive` (Ansible `become`, a Packer sudo provisioner). Windows: a silent MSI (`msiexec /qn`). macOS package installs never infer a reader. | Nobody |
+| A person, as an administrator | Linux: `sudo apt install` or `sudo dpkg -i` at a terminal. Windows: the installer's full interface. | That person, so the dashboard, `beacon traces` and `beacon share` work for them after they log in again |
+| Any macOS package install without `BEACON_LOG_READERS` | Installer.app process presence cannot be bound to the package transaction, because MDM InstallApplication may omit the command-line marker. | Nobody |
 | Anyone, with `BEACON_LOG_READERS` set | The setting, even an empty one | Exactly the accounts it lists, comma-separated (`DOMAIN\name` on Windows) |
 
-Set `BEACON_LOG_READERS` to an empty value in a fleet's settings so that nobody is ever added implicitly, whatever runs the install. Accounts are only ever added, never removed, and one that cannot be added is reported without failing the install. `--log-readers` does the same on `beacon endpoint install|repair --system`.
+On macOS, set `BEACON_LOG_READERS` explicitly for every account the package should add; an unset value adds nobody. Set it to an empty value in any fleet's settings so that nobody is ever added implicitly, whatever runs the install. Accounts are only ever added, never removed, and one that cannot be added is reported without failing the install. `--log-readers` does the same on `beacon endpoint install|repair --system`.
 
 **Fleet tooling sets these settings where it already writes settings,** because an MDM or a configuration manager cannot set the environment of a package's install script. The names are the same everywhere: `BEACON_LOG_ACCESS`, `BEACON_LOG_READERS`, `BEACON_ENDPOINT_HARNESSES` and the other documented `BEACON_*` install settings.
 
@@ -155,7 +156,7 @@ It lists `NT AUTHORITY\SYSTEM`, `BUILTIN\Administrators` and `beacon-log` and no
 
 ## Let your log shipper read the log
 
-Install creates the `beacon-log` group if it is missing and adds only the accounts named by `BEACON_LOG_READERS` or `--log-readers`, or the person who ran a first package install interactively (see [Package installs](#package-installs)). A shipper that runs as root keeps working with no change, and so does the Beacon Cloud forwarder. A shipper that runs as its own account needs to join the group, and then be restarted so it picks up the new membership:
+Install creates the `beacon-log` group if it is missing and adds only the accounts named by `BEACON_LOG_READERS` or `--log-readers`. On Linux and Windows, the package wrapper may supply the person it identifies as running a first package install interactively; macOS package installs require the explicit setting (see [Package installs](#package-installs)). A shipper that runs as root keeps working with no change, and so does the Beacon Cloud forwarder. A shipper that runs as its own account needs to join the group, and then be restarted so it picks up the new membership:
 
 ```bash title="Add a shipper's account to beacon-log"
 # Linux

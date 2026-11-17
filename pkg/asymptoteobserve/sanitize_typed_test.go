@@ -361,7 +361,7 @@ func TestTypedFieldNamesAreNotSecret(t *testing.T) {
 			walk(f.Type, path+"."+f.Name)
 		}
 	}
-	for _, v := range []any{MCPInfo{}, SystemContextInfo{}, GenAIInfo{}, RunInfo{}, VCSInfo{}} {
+	for _, v := range []any{Event{}, MCPInfo{}, SystemContextInfo{}, GenAIInfo{}, RunInfo{}, VCSInfo{}} {
 		walk(reflect.TypeOf(v), reflect.TypeOf(v).Name())
 	}
 }
@@ -426,6 +426,71 @@ func TestTypedConversionKeepsEveryField(t *testing.T) {
 	tool.Call, want.Tool = &call, &tool
 	if got := SanitizeGenAI(&genAI, opts); !reflect.DeepEqual(*got, want) {
 		t.Errorf("gen_ai = %s\nwant %s", mustJSON(t, got), mustJSON(t, want))
+	}
+}
+
+// Every serialized typed string is safe by default, including fields outside the blocks with
+// dedicated converters. Filling through reflection makes a newly added string leaf join this
+// regression test without another field list.
+func TestSanitizeEventCleansEveryTypedString(t *testing.T) {
+	const secret = "token=typed-field-secret-0123456789"
+	var event Event
+	fillEveryString(reflect.ValueOf(&event).Elem(), secret)
+	event.Raw = map[string]interface{}{"note": secret}
+	before := mustJSON(t, event)
+
+	sanitized := SanitizeEvent(event, 1<<20)
+	if after := mustJSON(t, event); after != before {
+		t.Fatal("sanitizing an event changed the caller's typed fields")
+	}
+	data, err := json.Marshal(sanitized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "typed-field-secret") {
+		t.Fatalf("a typed string retained the credential: %s", data)
+	}
+	if sanitized.Error == nil {
+		t.Fatal("error block was dropped")
+	}
+	if sanitized.Error.Type != "token=[REDACTED]" {
+		t.Fatalf("error.type = %q, want the typed credential redacted", sanitized.Error.Type)
+	}
+}
+
+func fillEveryString(v reflect.Value, text string) {
+	switch v.Kind() {
+	case reflect.String:
+		v.SetString(text)
+	case reflect.Pointer:
+		v.Set(reflect.New(v.Type().Elem()))
+		fillEveryString(v.Elem(), text)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			field := v.Type().Field(i)
+			name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+			if field.IsExported() && name != "-" {
+				fillEveryString(v.Field(i), text)
+			}
+		}
+	case reflect.Slice:
+		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
+		fillEveryString(v.Index(0), text)
+	case reflect.Array:
+		for i := range v.Len() {
+			fillEveryString(v.Index(i), text)
+		}
+	case reflect.Map:
+		v.Set(reflect.MakeMap(v.Type()))
+		key := reflect.New(v.Type().Key()).Elem()
+		if key.Kind() == reflect.String {
+			key.SetString("note")
+		}
+		value := reflect.New(v.Type().Elem()).Elem()
+		fillEveryString(value, text)
+		v.SetMapIndex(key, value)
+	case reflect.Interface:
+		v.Set(reflect.ValueOf(text))
 	}
 }
 

@@ -214,6 +214,9 @@ func otlpForwardFlags(forward *endpointconfig.OTLPForward) string {
 var errSetupCancelled = fmt.Errorf("setup cancelled; nothing was installed. Run `beacon endpoint install` again when you are ready, or set %s=0 to install without the guided setup", onboardingEnvEnabled)
 
 func runEndpointInstall(cmd *cobra.Command, args []string) error {
+	if err := resolveForwardingTokens(); err != nil {
+		return err
+	}
 	selection, err := resolveEndpointTargets(endpointOpts.harnesses, harness.DiscoverAll())
 	if err != nil {
 		return err
@@ -533,6 +536,9 @@ func runEndpointUninstall(cmd *cobra.Command, args []string) error {
 }
 
 func runEndpointRepair(cmd *cobra.Command, args []string) error {
+	if err := resolveForwardingTokens(); err != nil {
+		return err
+	}
 	selection, err := resolveEndpointTargets(endpointOpts.harnesses, harness.DiscoverAll())
 	if err != nil {
 		return err

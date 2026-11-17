@@ -31,15 +31,18 @@ export interface SettingsState {
  * (an endpoint off loopback, say) falls back to its default.
  */
 export function resolveSettings(stored: unknown): Settings {
-  const s = (stored ?? {}) as Partial<Settings>;
+  const s = (
+    stored != null && typeof stored === 'object' && !Array.isArray(stored) ? stored : {}
+  ) as Partial<Settings>;
   const out: Settings = { ...DEFAULT_SETTINGS, sites: { ...DEFAULT_SETTINGS.sites } };
   for (const key of ['enabled', 'retention', 'endpoint'] as const) {
-    if (!(key in s)) continue;
+    if (!Object.hasOwn(s, key)) continue;
     const r = parseSettingsPatch({ [key]: s[key] });
     if (r.ok) Object.assign(out, r.patch);
   }
-  if (s.sites && typeof s.sites === 'object') {
+  if (Object.hasOwn(s, 'sites') && s.sites && typeof s.sites === 'object') {
     for (const site of Object.keys(out.sites) as SiteName[]) {
+      if (!Object.hasOwn(s.sites, site)) continue;
       if (typeof s.sites[site] === 'boolean') out.sites[site] = s.sites[site];
     }
   }
@@ -53,19 +56,20 @@ export function resolveSettings(stored: unknown): Settings {
  * locks nothing.
  */
 export function resolveManaged(raw: unknown): { patch: Partial<Settings>; locked: LockedSetting[] } {
-  const m = (raw ?? {}) as Record<string, unknown>;
+  const m = (raw != null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
   const patch: Partial<Settings> = {};
   const locked: LockedSetting[] = [];
   for (const key of ['enabled', 'retention', 'endpoint'] as const) {
-    if (!(key in m)) continue;
+    if (!Object.hasOwn(m, key)) continue;
     const r = parseSettingsPatch({ [key]: m[key] });
     if (!r.ok) continue;
     Object.assign(patch, r.patch);
     locked.push(key);
   }
-  const sites = m.sites;
+  const sites = Object.hasOwn(m, 'sites') ? m.sites : undefined;
   if (sites && typeof sites === 'object' && !Array.isArray(sites)) {
     for (const site of Object.keys(DEFAULT_SETTINGS.sites) as SiteName[]) {
+      if (!Object.hasOwn(sites, site)) continue;
       const on = (sites as Record<string, unknown>)[site];
       if (typeof on !== 'boolean') continue;
       patch.sites = { ...(patch.sites ?? {}), [site]: on } as Settings['sites'];
@@ -78,8 +82,8 @@ export function resolveManaged(raw: unknown): { patch: Partial<Settings>; locked
 /** The first setting in `patch` that policy has locked, if any. */
 export function lockedIn(patch: Partial<Settings>, locked: readonly LockedSetting[]): LockedSetting | undefined {
   return locked.find((key) => {
-    if (!key.startsWith('sites.')) return key in patch;
-    return patch.sites != null && key.slice('sites.'.length) in patch.sites;
+    if (!key.startsWith('sites.')) return Object.hasOwn(patch, key);
+    return patch.sites != null && Object.hasOwn(patch.sites, key.slice('sites.'.length));
   });
 }
 

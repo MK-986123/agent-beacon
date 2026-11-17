@@ -68,8 +68,9 @@ class ClaudeParser implements TurnParser {
     }
   }
 
-  onChunk(chunk: string): void {
+  onChunk(chunk: string): boolean {
     for (const evt of this.sse.push(chunk)) this.handle(evt.data);
+    return !this.sse.rejected;
   }
 
   onDone(): void {

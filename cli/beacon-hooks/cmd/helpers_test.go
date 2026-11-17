@@ -2,8 +2,50 @@ package cmd
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func readStdinJSONForTest(t *testing.T, payload string) (map[string]interface{}, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "stdin.json")
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	original := os.Stdin
+	os.Stdin = file
+	t.Cleanup(func() { os.Stdin = original })
+	return readStdinJSON()
+}
+
+func TestReadStdinJSONEnforcesTheTransportBoundary(t *testing.T) {
+	t.Run("oversized", func(t *testing.T) {
+		payload := `{"value":"` + strings.Repeat("x", maxHookPayloadBytes) + `"}`
+		if _, err := readStdinJSONForTest(t, payload); err == nil || !strings.Contains(err.Error(), "exceeds") {
+			t.Fatalf("readStdinJSON() error = %v, want an oversized-payload error", err)
+		}
+	})
+
+	t.Run("second JSON value", func(t *testing.T) {
+		if _, err := readStdinJSONForTest(t, `{"session_id":"s1"}{"session_id":"s2"}`); err == nil ||
+			!strings.Contains(err.Error(), "more than one") {
+			t.Fatalf("readStdinJSON() error = %v, want a trailing-value error", err)
+		}
+	})
+
+	t.Run("ordinary object with whitespace", func(t *testing.T) {
+		input, err := readStdinJSONForTest(t, "{\"session_id\":\"s1\"} \n\t")
+		if err != nil || input["session_id"] != "s1" {
+			t.Fatalf("readStdinJSON() = %#v, %v; want the ordinary payload", input, err)
+		}
+	})
+}
 
 // Cursor runs Claude Code's user-level hooks with Cursor payloads. readStdinJSON switches
 // platformFlag to the runtime the payload came from and keeps the one the hook was invoked with.

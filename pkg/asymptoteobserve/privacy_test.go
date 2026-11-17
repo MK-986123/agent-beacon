@@ -72,6 +72,7 @@ func TestSanitizeEventWithHonorsRedactionAndTheAnswerLimit(t *testing.T) {
 	long := strings.Repeat("a", 8*1024)
 	build := func() Event {
 		event := NewEvent(NewEventOptions{Action: "gen_ai.response", Harness: HarnessInfo{Name: "test"}, Message: secret})
+		event.Error = &ErrorInfo{Type: secret}
 		event.SystemContext = &SystemContextInfo{Kind: "skills", Source: secret}
 		event.GenAI = &GenAIInfo{
 			Input:  &GenAIInputInfo{Messages: long},
@@ -81,12 +82,12 @@ func TestSanitizeEventWithHonorsRedactionAndTheAnswerLimit(t *testing.T) {
 	}
 
 	kept := SanitizeEventWith(build(), DefaultMaxEventBytes, EventSanitizeOptions{RedactSecrets: false})
-	if kept.Message != secret || kept.SystemContext.Source != secret {
-		t.Fatalf("redaction off changed message/system_context: %q / %q", kept.Message, kept.SystemContext.Source)
+	if kept.Message != secret || kept.Error.Type != secret || kept.SystemContext.Source != secret {
+		t.Fatalf("redaction off changed message/error/system_context: %q / %q / %q", kept.Message, kept.Error.Type, kept.SystemContext.Source)
 	}
 	redacted := SanitizeEventWith(build(), DefaultMaxEventBytes, EventSanitizeOptions{RedactSecrets: true})
-	if strings.Contains(redacted.Message, "sk-options") || strings.Contains(redacted.SystemContext.Source, "sk-options") {
-		t.Fatalf("redaction on leaked: %q / %q", redacted.Message, redacted.SystemContext.Source)
+	if strings.Contains(redacted.Message, "sk-options") || strings.Contains(redacted.Error.Type, "sk-options") || strings.Contains(redacted.SystemContext.Source, "sk-options") {
+		t.Fatalf("redaction on leaked: %q / %q / %q", redacted.Message, redacted.Error.Type, redacted.SystemContext.Source)
 	}
 
 	answer := SanitizeEventWith(build(), DefaultMaxEventBytes, EventSanitizeOptions{RedactSecrets: true, GenAIOutputLimit: 16 * 1024})
@@ -686,6 +687,8 @@ var redactIdempotenceInputs = []string{
 	"config dump\napi_key=sk-abcdefghijklmnopqrstuvwxyz0123\nOPENAI sk-abcdefghijklmnopqrstuvwxyz0123",
 	`{"token": "opaque-session-value-9", "password": "hunter2hunter2"}`,
 	"Authorization: Bearer abc.def.ghi and --password hunter2hunter2",
+	// Repeated event sanitization must retain the public JWT marker used by threat rules.
+	"claude -p 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig - hit /api'",
 	// A scheme the header rule does not list, with more after the credential on the line.
 	"Authorization: ApiKey VnVhQ2ZHY0JDZGJrUW0tZTVhT3g6dWkybHAyYXhUTm1zeWFrdzl0dk5udw== and more after it",
 	"Authorization: Hawk id=dh37fgj492je, ts=1353832234, mac=6R4rV5iENPoymWwjeHzjAGXUtLNIxmo1vpMofpLAE=",

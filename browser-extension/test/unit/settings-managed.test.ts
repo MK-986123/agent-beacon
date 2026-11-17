@@ -7,7 +7,8 @@ const local = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn() }));
 const managed = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock('../../src/shared/browser.js', () => ({ ext: { storage: { local, managed } } }));
 
-const { getSettingsState, lockedIn, resolveManaged, saveSettings } = await import('../../src/background/settings.js');
+const { getSettingsState, lockedIn, resolveManaged, resolveSettings, saveSettings } =
+  await import('../../src/background/settings.js');
 
 let stored: Record<string, unknown> | undefined;
 beforeEach(() => {
@@ -42,6 +43,32 @@ describe('resolveManaged', () => {
 
   it('reads no policy as nothing locked', () => {
     expect(resolveManaged(undefined)).toEqual({ patch: {}, locked: [] });
+  });
+
+  it('ignores inherited policy values and inherited per-site values', () => {
+    const sites = Object.assign(Object.create({ chatgpt_web: true }), { claude_web: false });
+    const policy = Object.assign(Object.create({ enabled: true, retention: 'full' }), { sites });
+    expect(resolveManaged(policy)).toEqual({
+      patch: { sites: { claude_web: false } },
+      locked: ['sites.claude_web'],
+    });
+  });
+});
+
+describe('resolveSettings', () => {
+  it('keeps own user privacy choices while ignoring inherited stored values', () => {
+    const sites = Object.assign(Object.create({ claude_web: true }), { chatgpt_web: false });
+    const storedSettings = Object.assign(Object.create({ endpoint: 'http://localhost:9999/v1/logs' }), {
+      enabled: false,
+      retention: 'metadata',
+      sites,
+    });
+    expect(resolveSettings(storedSettings)).toEqual({
+      ...DEFAULT_SETTINGS,
+      enabled: false,
+      retention: 'metadata',
+      sites: { claude_web: true, chatgpt_web: false },
+    });
   });
 });
 

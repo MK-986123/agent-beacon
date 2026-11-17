@@ -4,13 +4,13 @@
 import '../adapters/claude.js'; // registers the Claude adapter (side effect)
 import '../adapters/chatgpt.js'; // registers the ChatGPT adapter (side effect)
 import { ext } from '../shared/browser.js';
-import type { ChatTurn } from '../shared/types.js';
+import type { ChatTurn, RelayResponse } from '../shared/types.js';
 import { getSettingsState, lockedIn, saveSettings, siteEnabled } from './settings.js';
 import { Assembler } from './assembler.js';
 import { enqueueTurn, flush, installFlushAlarm, markInstalled } from './delivery.js';
 import { detectBrowser } from '../shared/browser-identity.js';
-import { parseHost, parseInterceptEvent, parseSettingsPatch } from '../shared/validate.js';
-import { isExtensionPage, isOwnContentScript, senderHost, type SenderLike } from './sender.js';
+import { parseInterceptEvent, parseSettingsPatch } from '../shared/validate.js';
+import { isExtensionPage, isOwnContentScript, senderOrigin, type SenderLike } from './sender.js';
 
 const assembler = new Assembler();
 
@@ -64,16 +64,24 @@ ext.runtime.onMessage.addListener((msg: unknown, sender, sendResponse) => {
   if (type === 'BEACON_RAW') {
     if (!isOwnContentScript(sender as SenderLike, ext.runtime.id)) return false;
     const event = parseInterceptEvent((msg as { event?: unknown }).event);
-    // Prefer the browser's record of the sending frame over the message body.
-    const host = senderHost(sender as SenderLike) ?? parseHost((msg as { host?: unknown }).host);
-    if (!event || !host) return false;
+    // Bind the intercepted request to the browser's record of the sending frame;
+    // the relay's page-supplied host is not an authority for request origin.
+    const origin = senderOrigin(sender as SenderLike);
+    if (!event || !origin) return false;
     // Feed the assembler SYNCHRONOUSLY, in message-arrival order. Stream events
     // arrive ordered (request → chunk → … → done); an `await` before this call
     // could let a chunk be processed before its `request` registered a parser,
     // dropping early SSE (e.g. message_start). Async work (settings, delivery)
     // happens only after a turn is finalized.
-    finalizeAll(assembler.handle(host, sender.tab?.id, event));
+    finalizeAll(assembler.handle(origin, sender.tab?.id, event));
     updateKeepAlive();
+    if (
+      (event.kind === 'request' || event.kind === 'chunk') &&
+      !assembler.has(sender.tab?.id, event.reqId)
+    ) {
+      const response: RelayResponse = { cancel: event.reqId };
+      sendResponse(response);
+    }
     return false;
   }
   return false;
