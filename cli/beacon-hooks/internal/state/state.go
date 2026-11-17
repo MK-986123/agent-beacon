@@ -23,7 +23,7 @@ func lockState(platform string) (unlock func()) {
 	if err := config.EnsureStateDir(platform); err != nil {
 		return stateMutex.Unlock
 	}
-	file, err := os.OpenFile(filepath.Join(config.GetStateDir(platform), "state.json.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	file, err := config.OpenPrivateFile(filepath.Join(config.GetStateDir(platform), "state.json.lock"), os.O_CREATE|os.O_RDWR)
 	if err != nil {
 		return stateMutex.Unlock
 	}
@@ -52,7 +52,7 @@ func writeStateFile(path string, data []byte) error {
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(config.HookFileMode); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
 		return err
@@ -117,7 +117,10 @@ func NewSessionState(sessionID, platform string) *SessionState {
 }
 
 func (s *SessionState) loadStateFile() map[string]*SessionData {
-	data, err := os.ReadFile(s.stateFilePath)
+	if err := config.EnsureStateDir(s.platform); err != nil {
+		return make(map[string]*SessionData)
+	}
+	data, err := config.ReadPrivateFile(s.stateFilePath)
 	if err != nil {
 		return make(map[string]*SessionData)
 	}
@@ -226,8 +229,11 @@ func CleanupStaleForPlatform(platform string) int {
 	defer lockState(platform)()
 
 	stateFilePath := filepath.Join(config.GetStateDir(platform), "state.json")
+	if err := config.EnsureStateDir(platform); err != nil {
+		return 0
+	}
 
-	data, err := os.ReadFile(stateFilePath)
+	data, err := config.ReadPrivateFile(stateFilePath)
 	if err != nil {
 		return 0
 	}
