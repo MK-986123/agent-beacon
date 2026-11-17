@@ -72,6 +72,7 @@ func TestSanitizeEventWithHonorsRedactionAndTheAnswerLimit(t *testing.T) {
 	long := strings.Repeat("a", 8*1024)
 	build := func() Event {
 		event := NewEvent(NewEventOptions{Action: "gen_ai.response", Harness: HarnessInfo{Name: "test"}, Message: secret})
+		event.Error = &ErrorInfo{Type: secret}
 		event.SystemContext = &SystemContextInfo{Kind: "skills", Source: secret}
 		event.GenAI = &GenAIInfo{
 			Input:  &GenAIInputInfo{Messages: long},
@@ -81,12 +82,12 @@ func TestSanitizeEventWithHonorsRedactionAndTheAnswerLimit(t *testing.T) {
 	}
 
 	kept := SanitizeEventWith(build(), DefaultMaxEventBytes, EventSanitizeOptions{RedactSecrets: false})
-	if kept.Message != secret || kept.SystemContext.Source != secret {
-		t.Fatalf("redaction off changed message/system_context: %q / %q", kept.Message, kept.SystemContext.Source)
+	if kept.Message != secret || kept.Error.Type != secret || kept.SystemContext.Source != secret {
+		t.Fatalf("redaction off changed message/error/system_context: %q / %q / %q", kept.Message, kept.Error.Type, kept.SystemContext.Source)
 	}
 	redacted := SanitizeEventWith(build(), DefaultMaxEventBytes, EventSanitizeOptions{RedactSecrets: true})
-	if strings.Contains(redacted.Message, "sk-options") || strings.Contains(redacted.SystemContext.Source, "sk-options") {
-		t.Fatalf("redaction on leaked: %q / %q", redacted.Message, redacted.SystemContext.Source)
+	if strings.Contains(redacted.Message, "sk-options") || strings.Contains(redacted.Error.Type, "sk-options") || strings.Contains(redacted.SystemContext.Source, "sk-options") {
+		t.Fatalf("redaction on leaked: %q / %q / %q", redacted.Message, redacted.Error.Type, redacted.SystemContext.Source)
 	}
 
 	answer := SanitizeEventWith(build(), DefaultMaxEventBytes, EventSanitizeOptions{RedactSecrets: true, GenAIOutputLimit: 16 * 1024})

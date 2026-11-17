@@ -1859,6 +1859,10 @@ func SanitizeEvent(event Event, maxBytes int) Event {
 // when the result would still not fit in maxBytes.
 func SanitizeEventWith(event Event, maxBytes int, opts EventSanitizeOptions) Event {
 	redact := opts.RedactSecrets
+	// Start with a structurally complete pass over typed strings. The field-specific work below
+	// keeps the established content and metadata limits, while this fallback protects fields such
+	// as error.type and any future typed string that has no dedicated sanitizer yet.
+	event = sanitizeEventTypedStrings(event, redact)
 	event.Message = CleanString(event.Message, DefaultStringLimit, redact)
 	if event.Tool != nil {
 		event.Tool.Command = CleanString(event.Tool.Command, DefaultStringLimit, redact)

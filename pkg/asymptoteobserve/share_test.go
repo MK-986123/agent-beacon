@@ -873,6 +873,34 @@ func TestShareBundleScrubsEveryFieldType(t *testing.T) {
 	}
 }
 
+func TestShareBundleRedactsTypedErrorSecrets(t *testing.T) {
+	secret := shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodOTLP, "session.error", "session")
+	secret.Event.ID = "secret-error"
+	secret.Error = &ErrorInfo{Type: "token=typed-error-secret-0123456789"}
+	ordinary := shareEventAt("2026-10-01T10:00:01Z", "claude_code", CollectionMethodOTLP, "session.error", "session")
+	ordinary.Event.ID = "ordinary-error"
+	ordinary.Error = &ErrorInfo{Type: "mcp_timeout"}
+
+	bundle := BuildShareBundle([]Event{secret, ordinary}, shareTestOpts)
+	data, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "typed-error-secret") {
+		t.Fatalf("error.type credential reached the share bundle: %s", data)
+	}
+	byID := map[string]TraceEventV1{}
+	for _, event := range bundle.Events {
+		byID[event.ID] = event
+	}
+	if got := byID["secret-error"].Error; got == nil || got.Type != "token=[REDACTED]" {
+		t.Fatalf("shared secret error = %+v, want the credential redacted", got)
+	}
+	if got := byID["ordinary-error"].Error; got == nil || got.Type != "mcp_timeout" {
+		t.Fatalf("shared ordinary error = %+v, want the original type", got)
+	}
+}
+
 func TestShareProjects(t *testing.T) {
 	event := func(action, category string) Event {
 		return shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodHook, action, category)

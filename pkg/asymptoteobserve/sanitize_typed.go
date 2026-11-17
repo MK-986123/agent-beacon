@@ -14,6 +14,10 @@ import (
 // This file is how SanitizeEvent (privacy.go) sanitizes the typed parts of an event and decides
 // whether it is too large:
 //
+//   - Every serialized typed string outside Raw and GenAI is copied and cleaned by
+//     sanitizeEventTypedStrings. That reflection-backed fallback makes a new typed event field safe
+//     by default instead of depending on a second manually maintained field list. The specialized
+//     sanitizers below then apply their narrower metadata limits.
 //   - MCP, SystemContext and GenAI are converted field by field into what a JSON round trip
 //     (marshal, decode into a map, SanitizeMap, marshal, decode back into the type) leaves of
 //     them (genericSanitizer). A value JSON cannot represent, which made that round trip fail, is
@@ -71,6 +75,71 @@ const maxGenericDepth = 100
 // (TestTypedFieldNamesAreNotSecret).
 func (g genericSanitizer) text(s string) string {
 	return CleanString(jsonString(s), g.opts.StringLimit, g.opts.RedactSecrets)
+}
+
+// sanitizeEventTypedStrings returns a copy of event with every serialized typed string cleaned.
+// Raw and GenAI stay attached to the original until their shape-aware sanitizers run: Raw needs
+// secret field names and list flags considered, while GenAI has interface values and an optional
+// longer browser-answer limit. DefaultStringLimit is the fallback so existing retained-content
+// limits are not narrowed; SanitizeEventWith applies the tighter metadata limits afterwards.
+func sanitizeEventTypedStrings(event Event, redactSecrets bool) Event {
+	genAI, raw := event.GenAI, event.Raw
+	event.GenAI, event.Raw = nil, nil
+	g := newGenericSanitizer(PrivacyOptions{RedactSecrets: redactSecrets, StringLimit: DefaultStringLimit})
+	event = sanitizeTypedStrings(reflect.ValueOf(event), g).Interface().(Event)
+	event.GenAI, event.Raw = genAI, raw
+	return event
+}
+
+// sanitizeTypedStrings copies v recursively and cleans string leaves. Maps and interface values
+// are left for their shape-aware sanitizers, and json:"-" fields are not part of the privacy
+// boundary because no writer serializes them.
+func sanitizeTypedStrings(v reflect.Value, g genericSanitizer) reflect.Value {
+	switch v.Kind() {
+	case reflect.String:
+		out := reflect.New(v.Type()).Elem()
+		out.SetString(g.text(v.String()))
+		return out
+	case reflect.Pointer:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.New(v.Type().Elem())
+		out.Elem().Set(sanitizeTypedStrings(v.Elem(), g))
+		return out
+	case reflect.Struct:
+		out := reflect.New(v.Type()).Elem()
+		for i := range v.NumField() {
+			field := v.Type().Field(i)
+			if !field.IsExported() {
+				continue
+			}
+			name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+			if name == "-" {
+				out.Field(i).Set(v.Field(i))
+				continue
+			}
+			out.Field(i).Set(sanitizeTypedStrings(v.Field(i), g))
+		}
+		return out
+	case reflect.Slice:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+		for i := range v.Len() {
+			out.Index(i).Set(sanitizeTypedStrings(v.Index(i), g))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(v.Type()).Elem()
+		for i := range v.Len() {
+			out.Index(i).Set(sanitizeTypedStrings(v.Index(i), g))
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // jsonString is s as the encoder writes it and the decoder reads it back: each byte that is not
