@@ -19,9 +19,21 @@ done
 
 STUB="$TMP_DIR/beacon"
 ARGS="$TMP_DIR/args"
+SPLUNK_TOKEN="$TMP_DIR/splunk-token"
 cat >"$STUB" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$@" >"$BEACON_TEST_ARGS"
+[ -z "${BEACON_SPLUNK_HEC_TOKEN+x}" ] || exit 91
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --splunk-hec-token-fd)
+      shift
+      [ "$1" = 3 ] || exit 92
+      cat <&3 >"$BEACON_TEST_SPLUNK_TOKEN"
+      ;;
+  esac
+  shift
+done
 STUB
 chmod 755 "$STUB"
 
@@ -34,8 +46,9 @@ fail() {
 # run_install [VAR=value ...] runs the install script in a clean environment pointed at the stub,
 # with no system config unless the caller makes one, and no defaults file unless it names one.
 run_install() {
-  rm -f "$ARGS"
+  rm -f "$ARGS" "$SPLUNK_TOKEN"
   env -i PATH="$PATH" HOME="$TMP_DIR" BEACON_BIN="$STUB" BEACON_TEST_ARGS="$ARGS" \
+    BEACON_TEST_SPLUNK_TOKEN="$SPLUNK_TOKEN" \
     BEACON_COLLECTOR="$TMP_DIR/collector" \
     BEACON_SYSTEM_CONFIG="$TMP_DIR/etc/config.json" \
     BEACON_DEFAULTS_FILE="$TMP_DIR/none" \
@@ -152,6 +165,7 @@ BEACON_LOG_ACCESS=shared
 export BEACON_ENDPOINT_HARNESSES="claude,codex,cursor"
   BEACON_SESSION_SYNC='1'
 BEACON_OTLP_HTTP_PORT=4319   
+BEACON_SPLUNK_HEC_TOKEN=protected-splunk-token
 NOT_A_BEACON_SETTING=1
 BEACON_BIN=/tmp/evil
 PATH=/tmp/evil
@@ -164,6 +178,10 @@ expect_log_access shared "defaults file"
 [ "$(flag_value --harness)" = "claude,codex,cursor" ] || fail "defaults file: --harness is '$(flag_value --harness)'"
 [ "$(flag_value --otlp-http-port)" = "4319" ] || fail "defaults file: --otlp-http-port is '$(flag_value --otlp-http-port)'"
 has_flag --session-sync || fail "defaults file: BEACON_SESSION_SYNC='1' did not pass --session-sync"
+has_flag --splunk-hec-token && fail "defaults file: the Splunk HEC token was passed in argv"
+[ "$(flag_value --splunk-hec-token-fd)" = 3 ] || fail "defaults file: the Splunk HEC token descriptor was not passed"
+[ "$(cat "$SPLUNK_TOKEN")" = protected-splunk-token ] || fail "defaults file: the Splunk HEC token descriptor did not preserve the token"
+grep -q 'protected-splunk-token' "$ARGS" && fail "defaults file: the Splunk HEC token appeared in argv"
 # Only documented install settings are taken: the binary still came from the environment, and the
 # command substitution was passed as an inert string rather than run.
 [ -s "$ARGS" ] || fail "defaults file: BEACON_BIN in the file replaced the binary"

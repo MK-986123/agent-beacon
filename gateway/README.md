@@ -29,10 +29,12 @@ go build -o beacon-gateway ./cmd/beacon-gateway
 ```
 
 Without `-config` it serves the LiteLLM callout on `127.0.0.1:4019` and writes
-`gateway-events.jsonl` in the working directory. `/healthz` and `/stats` are served on the admin
-listener (`127.0.0.1:4029`). `deploy/beacon-gateway.yaml` documents every setting; the shipped
-configurations observe only (LiteLLM fails open, Envoy streams replies and lets calls through when
-the gateway is down).
+`gateway-events.jsonl` and `gateway-findings.jsonl` in the working directory. Each rotates at
+10 MiB and keeps five owner-only archives (`.1` through `.5`), so sustained traffic cannot grow
+either output without bound. `/healthz` and `/stats` are served on the admin listener
+(`127.0.0.1:4029`). `deploy/beacon-gateway.yaml` documents every setting; the shipped configurations
+observe only (LiteLLM fails open, Envoy streams replies and lets calls through when the gateway is
+down).
 
 `content.retention: metadata` writes events as Beacon's Metadata-only forwarding does: identifiers,
 names, paths, command lines, model and token usage, and no prompt, reply, system instructions, tool
@@ -135,13 +137,18 @@ An output is an entry of `outputs`, naming its type and the record kinds it rece
 ```yaml
 outputs:
   - jsonl: /var/log/beacon/gateway-events.jsonl   # shorthand for type: jsonl
+    rotate_bytes: 10485760                         # default: 10 MiB
+    rotate_archives: 5                             # default: five owner-only archives
     kinds: [beacon.event]
   - type: <a registered output>                     # its own keys alongside
     kinds: [beacon.event, finding]
 ```
 
 A sink receives its kinds in batches, off the call path; when it falls behind, records are dropped
-and counted in `/stats`.
+and counted in `/stats`. JSONL rotation happens before a batch would cross `rotate_bytes`; batches
+are never split, so one unusually large batch can exceed that target but the archive count remains
+bounded. If rotation fails, that batch is dropped and counted instead of growing the live file
+past its retention target.
 
 ## Testing
 

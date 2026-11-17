@@ -3,7 +3,15 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 
-import { safeClone as canonicalSafeClone } from "./safe-clone.ts"
+import {
+  maxPayloadArrayItems,
+  maxPayloadNodes,
+  maxPayloadObjectEntries,
+  maxPayloadSerializedBytes,
+  maxPayloadStringCodeUnits,
+  payloadLimitMessage,
+  safeClone as canonicalSafeClone,
+} from "./safe-clone.ts"
 import {
   beginMarker,
   canonicalBlock,
@@ -261,17 +269,29 @@ describe.each(implementations)("%s", (_name, safeClone) => {
   })
 
   describe("size", () => {
-    test("pass a wide or long payload through whole; size caps live in beacon-hooks", () => {
-      const wide = Object.fromEntries(Array.from({ length: 5000 }, (_, i) => [`k${i}`, i]))
-      const long = "x".repeat(1 << 20)
-      const out = safeClone({ wide, long, list: Array.from({ length: 5000 }, (_, i) => i) }) as {
-        wide: object
-        long: string
-        list: unknown[]
+    test("reject strings, arrays and objects beyond their first-boundary limits", () => {
+      const wide = Object.fromEntries(Array.from({ length: maxPayloadObjectEntries + 1 }, (_, i) => [`k${i}`, i]))
+      const long = "x".repeat(maxPayloadStringCodeUnits + 1)
+      const list = Array.from({ length: maxPayloadArrayItems + 1 }, (_, i) => i)
+      for (const value of [wide, long, list]) {
+        expect(() => safeClone(value)).toThrow(payloadLimitMessage)
       }
-      expect(Object.keys(out.wide).length).toBe(5000)
-      expect(out.long.length).toBe(1 << 20)
-      expect(out.list.length).toBe(5000)
+    })
+
+    test("reject aggregate node and serialized-byte budgets", () => {
+      const nodes = Object.fromEntries(
+        Array.from({ length: maxPayloadObjectEntries }, (_, i) => [`k${i}`, [i, i, i, i]]),
+      )
+      expect(maxPayloadObjectEntries * 5).toBeGreaterThan(maxPayloadNodes)
+      expect(() => safeClone(nodes)).toThrow(payloadLimitMessage)
+      expect(() => safeClone({ a: "x".repeat(50_000), b: "y".repeat(50_000) })).toThrow(payloadLimitMessage)
+    })
+
+    test("keep an ordinary payload unchanged within every budget", () => {
+      const value = { type: "tool.execute.after", output: "ok", list: Array.from({ length: 100 }, (_, i) => i) }
+      const out = safeClone(value)
+      expect(out).toEqual(value)
+      expect(Buffer.byteLength(JSON.stringify(out))).toBeLessThanOrEqual(maxPayloadSerializedBytes)
     })
   })
 

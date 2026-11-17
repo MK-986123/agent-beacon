@@ -71,8 +71,9 @@ class ChatGptParser implements TurnParser {
     }
   }
 
-  onChunk(chunk: string): void {
+  onChunk(chunk: string): boolean {
     for (const evt of this.sse.push(chunk)) this.handle(evt);
+    return !this.sse.rejected;
   }
 
   onDone(): void {
@@ -96,8 +97,16 @@ class ChatGptParser implements TurnParser {
     }
     if (obj == null || typeof obj !== 'object') return;
 
+    const hasOp = Object.hasOwn(obj, 'o');
+    const hasPath = Object.hasOwn(obj, 'p');
+    const hasValue = Object.hasOwn(obj, 'v');
+
     // Typed control events carry a `type` and are not delta ops.
-    if (typeof obj.type === 'string' && !('v' in obj && (('o' in obj) || ('p' in obj)))) {
+    if (
+      Object.hasOwn(obj, 'type') &&
+      typeof obj.type === 'string' &&
+      !(hasValue && (hasOp || hasPath))
+    ) {
       switch (obj.type) {
         case 'resume_conversation_token':
           if (!this.sessionId && typeof obj.conversation_id === 'string')
@@ -112,18 +121,25 @@ class ChatGptParser implements TurnParser {
     }
 
     // Delta op: resolve op, path and target message with bare-value inheritance.
-    if ('o' in obj) this.lastOp = obj.o;
-    if ('p' in obj) this.lastPath = obj.p;
-    if (typeof obj.c === 'number') this.lastC = obj.c;
+    const hasCursor = Object.hasOwn(obj, 'c');
+    if (
+      (hasOp && typeof obj.o !== 'string') ||
+      (hasPath && typeof obj.p !== 'string') ||
+      (hasCursor && typeof obj.c !== 'number')
+    )
+      return;
+    if (hasOp) this.lastOp = obj.o;
+    if (hasPath) this.lastPath = obj.p;
+    if (hasCursor) this.lastC = obj.c;
     if (this.lastOp === 'add' && (this.lastPath === '' || this.lastPath === '/')) {
-      const c = typeof obj.c === 'number' ? obj.c : this.nextC;
-      if (obj.v != null && typeof obj.v === 'object') this.messages.set(c, withTextParts(obj.v));
+      const c = hasCursor ? obj.c : this.nextC;
+      if (hasValue && obj.v != null && typeof obj.v === 'object') this.messages.set(c, withTextParts(obj.v));
       this.lastC = c;
       this.nextC = Math.max(this.nextC, c + 1);
       return;
     }
     const root = this.messages.get(this.lastC);
-    if (root) apply(root, this.lastOp, this.lastPath, obj.v);
+    if (root) apply(root, this.lastOp, this.lastPath, hasValue ? obj.v : undefined);
   }
 
   getTurn(): ChatTurn | null {
@@ -160,7 +176,11 @@ class ChatGptParser implements TurnParser {
   }
 }
 
-function apply(root: any, op: string, path: string, v: any): void {
+// Nested patch lists are untrusted; their serialized size alone does not bound stack use.
+const MAX_PATCH_DEPTH = 64;
+
+function apply(root: any, op: unknown, path: unknown, v: any, depth = 0): void {
+  if (depth > MAX_PATCH_DEPTH) return;
   switch (op) {
     case 'add':
     case 'replace':
@@ -173,7 +193,7 @@ function apply(root: any, op: string, path: string, v: any): void {
       removeAt(root, path);
       break;
     case 'patch':
-      if (Array.isArray(v)) for (const s of v) apply(root, s?.o, s?.p ?? '', s?.v);
+      if (Array.isArray(v)) for (const s of v) apply(root, s?.o, s?.p ?? '', s?.v, depth + 1);
       break;
   }
 }
@@ -276,26 +296,37 @@ function parseJson(text: string): unknown {
   }
 }
 
-/** Navigate to the parent of `path` and return [container, key]. */
-function locate(root: any, path: string): [any, string | number] | null {
+const PROTOTYPE_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
+
+/** Navigate only through own data properties to the parent of `path`. */
+function locate(root: any, path: unknown): [any, string | number] | null {
+  if (typeof path !== 'string') return null;
   const segs = path.split('/').filter(Boolean);
-  if (segs.length === 0) return null;
+  if (segs.length === 0 || segs.some((segment) => PROTOTYPE_SEGMENTS.has(segment))) return null;
   let obj = root;
   for (let i = 0; i < segs.length - 1; i++) {
-    if (obj == null) return null;
+    if (obj == null || typeof obj !== 'object') return null;
     const k = segs[i];
-    obj = Array.isArray(obj) ? obj[Number(k)] : obj[k];
+    const key = Array.isArray(obj) ? Number(k) : k;
+    if (!Object.hasOwn(obj, key)) return null;
+    obj = obj[key];
   }
-  if (obj == null) return null;
+  if (obj == null || typeof obj !== 'object') return null;
   const last = segs[segs.length - 1];
-  return [obj, Array.isArray(obj) ? Number(last) : last];
+  if (Array.isArray(obj)) {
+    const index = Number(last);
+    // Allow replacement and appending one position, never sparse growth from a tiny delta.
+    if (!Number.isSafeInteger(index) || index < 0 || index > obj.length) return null;
+    return [obj, index];
+  }
+  return [obj, last];
 }
 
-function appendAt(root: any, path: string, v: any): void {
+function appendAt(root: any, path: unknown, v: any): void {
   const loc = locate(root, path);
   if (!loc) return;
   const [obj, key] = loc;
-  const cur = (obj as any)[key];
+  const cur = Object.hasOwn(obj, key) ? (obj as any)[key] : undefined;
   if (typeof v === 'string') {
     (obj as any)[key] = (typeof cur === 'string' ? cur : '') + v;
   } else if (Array.isArray(v) && Array.isArray(cur)) {
@@ -307,17 +338,18 @@ function appendAt(root: any, path: string, v: any): void {
   }
 }
 
-function setAt(root: any, path: string, v: any): void {
+function setAt(root: any, path: unknown, v: any): void {
   const loc = locate(root, path);
   if (!loc) return;
   const [obj, key] = loc;
   (obj as any)[key] = v;
 }
 
-function removeAt(root: any, path: string): void {
+function removeAt(root: any, path: unknown): void {
   const loc = locate(root, path);
   if (!loc) return;
   const [obj, key] = loc;
+  if (!Object.hasOwn(obj, key)) return;
   if (Array.isArray(obj) && typeof key === 'number') obj.splice(key, 1);
   else delete (obj as any)[key];
 }

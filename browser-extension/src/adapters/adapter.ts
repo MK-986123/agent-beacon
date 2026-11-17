@@ -7,8 +7,8 @@ import type { ChatTurn, SiteName } from '../shared/types.js';
 export interface TurnParser {
   /** Called once with the outbound request (prompt lives in the body). */
   onRequest(url: string, method: string, body: string | null): void;
-  /** Called for each raw SSE chunk from the response stream. */
-  onChunk(chunk: string): void;
+  /** Called for each raw SSE chunk; false closes a stream rejected by parser limits. */
+  onChunk(chunk: string): boolean;
   /** Called when the stream ends (cleanly or aborted). */
   onDone(): void;
   /** Best-effort snapshot of the turn so far (null if nothing captured yet). */

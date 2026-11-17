@@ -6,6 +6,54 @@ import (
 	"strings"
 )
 
+const (
+	maxDiffBytes        = 64 << 10
+	diffTruncatedMarker = "...[diff truncated by Beacon]"
+)
+
+// boundedDiff renders a diff without ever accumulating more than the event-line budget. Space for
+// an explicit marker is reserved from the start so an oversized edit is never silently presented
+// as a complete diff.
+type boundedDiff struct {
+	b         strings.Builder
+	truncated bool
+}
+
+func (d *boundedDiff) line(parts ...string) bool {
+	if d.truncated {
+		return false
+	}
+	size := 0
+	for _, part := range parts {
+		size += len(part)
+	}
+	separator := 0
+	if d.b.Len() > 0 {
+		separator = 1
+	}
+	if d.b.Len()+separator+size > maxDiffBytes-len(diffTruncatedMarker)-1 {
+		d.truncated = true
+		return false
+	}
+	if separator != 0 {
+		d.b.WriteByte('\n')
+	}
+	for _, part := range parts {
+		d.b.WriteString(part)
+	}
+	return true
+}
+
+func (d *boundedDiff) String() string {
+	if !d.truncated {
+		return d.b.String()
+	}
+	if d.b.Len() == 0 {
+		return diffTruncatedMarker
+	}
+	return d.b.String() + "\n" + diffTruncatedMarker
+}
+
 // FromToolResponse builds a diff from any supported tool type
 func FromToolResponse(toolName string, toolInput, toolResponse map[string]interface{}) string {
 	filePath := GetStringFromMaps("file_path", toolInput, toolResponse)
@@ -65,7 +113,8 @@ func FromToolResponse(toolName string, toolInput, toolResponse map[string]interf
 			return ""
 		}
 
-		var allDiffs []string
+		var out boundedDiff
+		wroteDiff := false
 		for _, edit := range edits {
 			editMap, ok := edit.(map[string]interface{})
 			if !ok {
@@ -77,11 +126,19 @@ func FromToolResponse(toolName string, toolInput, toolResponse map[string]interf
 			}
 			oldStr := resolveEditString("old_string", "oldString", "old_str", editMap)
 			newStr := resolveEditString("new_string", "newString", "new_str", editMap)
-			if d := fromEditTool(editFile, oldStr, newStr); d != "" {
-				allDiffs = append(allDiffs, d)
+			if oldStr == "" && newStr == "" {
+				continue
+			}
+			if wroteDiff && !out.line("") {
+				break
+			}
+			appendEditTool(&out, editFile, oldStr, newStr)
+			wroteDiff = true
+			if out.truncated {
+				break
 			}
 		}
-		return strings.Join(allDiffs, "\n\n")
+		return out.String()
 
 	case "create_file", "copilot_createFile":
 		content := GetStringFromMaps("content", toolInput, toolResponse)
@@ -124,41 +181,71 @@ func resolveEditString(snakeKey, camelKey, shortKey string, maps ...map[string]i
 //	+added line
 //	*** End Patch
 func fromCopilotPatch(filePath, patchInput string) string {
-	lines := strings.Split(patchInput, "\n")
-	var result []string
-
-	for _, line := range lines {
+	var out boundedDiff
+	started := false
+	remaining := patchInput
+	for {
+		line := remaining
+		lastLine := true
+		if newline := strings.IndexByte(remaining, '\n'); newline >= 0 {
+			line = remaining[:newline]
+			remaining = remaining[newline+1:]
+			lastLine = false
+		} else {
+			remaining = ""
+		}
 		trimmed := strings.TrimSpace(line)
 
 		// Skip patch boundaries
 		if trimmed == "*** Begin Patch" || trimmed == "*** End Patch" {
+			if lastLine {
+				break
+			}
 			continue
 		}
 
 		// File headers: extract filename and emit appropriate diff header
 		if oldPath, newPath, ok := parsePatchFileHeader(trimmed, filePath); ok {
-			result = append(result, oldPath, newPath)
+			started = true
+			if !out.line(oldPath) || !out.line(newPath) {
+				break
+			}
+			if lastLine {
+				break
+			}
 			continue
 		}
 
 		// Convert @@@ markers to standard @@ markers
 		if strings.HasPrefix(trimmed, "@@@") {
-			result = append(result, strings.Replace(line, "@@@", "@@", 2))
+			started = true
+			if len(line) > maxDiffBytes || !out.line(strings.Replace(line, "@@@", "@@", 2)) {
+				out.truncated = true
+				break
+			}
+			if lastLine {
+				break
+			}
 			continue
 		}
 
 		// Pass through diff content lines (context, additions, removals)
-		if len(result) > 0 {
-			result = append(result, line)
+		if started && !out.line(line) {
+			break
+		}
+		if lastLine {
+			break
 		}
 	}
 
-	if len(result) == 0 {
+	if !started {
+		out = boundedDiff{}
 		filename := filepath.Base(filePath)
-		return fmt.Sprintf("--- a/%s\n+++ b/%s\n%s", filename, filename, patchInput)
+		out.line("--- a/", filename)
+		out.line("+++ b/", filename)
+		out.line(patchInput)
 	}
-
-	return strings.Join(result, "\n")
+	return out.String()
 }
 
 // parsePatchFileHeader parses a Copilot patch file header line and returns the
@@ -205,10 +292,9 @@ func fromStructuredPatch(filePath string, structuredPatch []interface{}) string 
 	}
 
 	filename := filepath.Base(filePath)
-	lines := []string{
-		fmt.Sprintf("--- a/%s", filename),
-		fmt.Sprintf("+++ b/%s", filename),
-	}
+	var out boundedDiff
+	out.line("--- a/", filename)
+	out.line("+++ b/", filename)
 
 	for _, hunk := range structuredPatch {
 		hunkMap, ok := hunk.(map[string]interface{})
@@ -221,24 +307,32 @@ func fromStructuredPatch(filePath string, structuredPatch []interface{}) string 
 		newStart := getIntFromMap(hunkMap, "newStart", 1)
 		newLines := getIntFromMap(hunkMap, "newLines", 0)
 
-		lines = append(lines, fmt.Sprintf("@@ -%d,%d +%d,%d @@", oldStart, oldLines, newStart, newLines))
+		if !out.line(fmt.Sprintf("@@ -%d,%d +%d,%d @@", oldStart, oldLines, newStart, newLines)) {
+			break
+		}
 
 		if hunkLines, ok := hunkMap["lines"].([]interface{}); ok {
 			for _, line := range hunkLines {
 				if lineStr, ok := line.(string); ok {
-					lines = append(lines, lineStr)
+					if !out.line(lineStr) {
+						break
+					}
 				}
 			}
 		}
+		if out.truncated {
+			break
+		}
 	}
 
-	return strings.Join(lines, "\n")
+	return out.String()
 }
 
 // FromCursorEdits builds a unified diff from Cursor's afterFileEdit edits array.
 // Each edit has old_string and new_string fields, reusing the existing fromEditTool helper.
 func FromCursorEdits(filePath string, edits []interface{}) string {
-	var allDiffs []string
+	var out boundedDiff
+	wroteDiff := false
 	for _, edit := range edits {
 		editMap, ok := edit.(map[string]interface{})
 		if !ok {
@@ -246,72 +340,102 @@ func FromCursorEdits(filePath string, edits []interface{}) string {
 		}
 		oldStr, _ := editMap["old_string"].(string)
 		newStr, _ := editMap["new_string"].(string)
-		if d := fromEditTool(filePath, oldStr, newStr); d != "" {
-			allDiffs = append(allDiffs, d)
+		if oldStr == "" && newStr == "" {
+			continue
+		}
+		if wroteDiff && !out.line("") {
+			break
+		}
+		appendEditTool(&out, filePath, oldStr, newStr)
+		wroteDiff = true
+		if out.truncated {
+			break
 		}
 	}
-	return strings.Join(allDiffs, "\n\n")
+	return out.String()
 }
 
 func fromEditTool(filePath, oldString, newString string) string {
+	var out boundedDiff
+	appendEditTool(&out, filePath, oldString, newString)
+	return out.String()
+}
+
+func appendEditTool(out *boundedDiff, filePath, oldString, newString string) bool {
 	if oldString == "" && newString == "" {
-		return ""
+		return false
 	}
-
 	filename := filepath.Base(filePath)
-	oldLines := splitLines(oldString)
-	newLines := splitLines(newString)
-
-	lines := []string{
-		fmt.Sprintf("--- a/%s", filename),
-		fmt.Sprintf("+++ b/%s", filename),
-		fmt.Sprintf("@@ -1,%d +1,%d @@", len(oldLines), len(newLines)),
+	if !out.line("--- a/", filename) ||
+		!out.line("+++ b/", filename) ||
+		!out.line(fmt.Sprintf("@@ -1,%d +1,%d @@", diffLineCount(oldString), diffLineCount(newString))) {
+		return true
 	}
-
-	for _, line := range oldLines {
-		lines = append(lines, "-"+line)
+	if !appendDiffLines(out, oldString, "-") {
+		return true
 	}
-	for _, line := range newLines {
-		lines = append(lines, "+"+line)
-	}
-
-	return strings.Join(lines, "\n")
+	appendDiffLines(out, newString, "+")
+	return true
 }
 
 func fromWriteTool(filePath, content, originalFile string) string {
 	filename := filepath.Base(filePath)
-	newLines := splitLines(content)
-	oldLines := splitLines(originalFile)
-	lines := []string{fmt.Sprintf("--- a/%s", filename), fmt.Sprintf("+++ b/%s", filename)}
+	var out boundedDiff
+	out.line("--- a/", filename)
+	out.line("+++ b/", filename)
 	if originalFile != "" {
-		lines = append(lines, fmt.Sprintf("@@ -1,%d +1,%d @@", len(oldLines), len(newLines)))
-		lines = appendWholeFileLines(lines, oldLines, originalFile, "-")
+		out.line(fmt.Sprintf("@@ -1,%d +1,%d @@", diffLineCount(originalFile), diffLineCount(content)))
+		appendWholeFileLines(&out, originalFile, "-")
 	} else {
-		lines = append(lines, fmt.Sprintf("@@ -0,0 +1,%d @@", len(newLines)))
+		out.line(fmt.Sprintf("@@ -0,0 +1,%d @@", diffLineCount(content)))
 	}
-	lines = appendWholeFileLines(lines, newLines, content, "+")
-	return strings.Join(lines, "\n")
+	if !out.truncated {
+		appendWholeFileLines(&out, content, "+")
+	}
+	return out.String()
 }
 
 // Whole-file observations establish EOF; edit fragments do not. Emit the unified
 // diff marker only here so an unterminated replaced span is not mistaken for EOF.
-func appendWholeFileLines(lines, fileLines []string, content, prefix string) []string {
-	for _, line := range fileLines {
-		lines = append(lines, prefix+line)
+func appendWholeFileLines(out *boundedDiff, content, prefix string) bool {
+	if !appendDiffLines(out, content, prefix) {
+		return false
 	}
-	if content != "" && !strings.HasSuffix(content, "\n") {
-		lines = append(lines, "\\ No newline at end of file")
-	}
-	return lines
+	return content == "" || strings.HasSuffix(content, "\n") || out.line("\\ No newline at end of file")
 }
 
-func splitLines(s string) []string {
-	if s == "" {
-		return []string{}
+func appendDiffLines(out *boundedDiff, content, prefix string) bool {
+	if content == "" {
+		return true
 	}
 	// A trailing newline terminates the last line; it is not another blank line.
-	// Remove just one terminator so actual trailing blank lines remain.
-	return strings.Split(strings.TrimSuffix(s, "\n"), "\n")
+	// Ignore just one terminator so actual trailing blank lines remain.
+	end := len(content)
+	if content[end-1] == '\n' {
+		end--
+	}
+	for start := 0; ; {
+		lineEnd := strings.IndexByte(content[start:end], '\n')
+		if lineEnd < 0 {
+			return out.line(prefix, content[start:end])
+		}
+		lineEnd += start
+		if !out.line(prefix, content[start:lineEnd]) {
+			return false
+		}
+		start = lineEnd + 1
+	}
+}
+
+func diffLineCount(content string) int {
+	if content == "" {
+		return 0
+	}
+	lines := strings.Count(content, "\n")
+	if !strings.HasSuffix(content, "\n") {
+		lines++
+	}
+	return lines
 }
 
 // NormalizePath strips surrounding double quotes and whitespace from a path string.

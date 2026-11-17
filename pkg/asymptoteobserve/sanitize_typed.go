@@ -86,29 +86,27 @@ func sanitizeEventTypedStrings(event Event, redactSecrets bool) Event {
 	genAI, raw := event.GenAI, event.Raw
 	event.GenAI, event.Raw = nil, nil
 	g := newGenericSanitizer(PrivacyOptions{RedactSecrets: redactSecrets, StringLimit: DefaultStringLimit})
-	event = sanitizeTypedStrings(reflect.ValueOf(event), g).Interface().(Event)
+	sanitizeTypedStrings(reflect.ValueOf(&event).Elem(), g)
 	event.GenAI, event.Raw = genAI, raw
 	return event
 }
 
-// sanitizeTypedStrings copies v recursively and cleans string leaves. Maps and interface values
-// are left for their shape-aware sanitizers, and json:"-" fields are not part of the privacy
-// boundary because no writer serializes them.
-func sanitizeTypedStrings(v reflect.Value, g genericSanitizer) reflect.Value {
+// sanitizeTypedStrings cleans the event copy, cloning pointers and slices before changing their
+// contents. Strings are set in place instead of allocating a reflection value for every leaf.
+// Maps and interfaces retain their shape-aware sanitizers; json:"-" fields are never serialized.
+func sanitizeTypedStrings(v reflect.Value, g genericSanitizer) {
 	switch v.Kind() {
 	case reflect.String:
-		out := reflect.New(v.Type()).Elem()
-		out.SetString(g.text(v.String()))
-		return out
+		v.SetString(g.text(v.String()))
 	case reflect.Pointer:
 		if v.IsNil() {
-			return v
+			return
 		}
 		out := reflect.New(v.Type().Elem())
-		out.Elem().Set(sanitizeTypedStrings(v.Elem(), g))
-		return out
+		out.Elem().Set(v.Elem())
+		sanitizeTypedStrings(out.Elem(), g)
+		v.Set(out)
 	case reflect.Struct:
-		out := reflect.New(v.Type()).Elem()
 		for i := range v.NumField() {
 			field := v.Type().Field(i)
 			if !field.IsExported() {
@@ -116,29 +114,24 @@ func sanitizeTypedStrings(v reflect.Value, g genericSanitizer) reflect.Value {
 			}
 			name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
 			if name == "-" {
-				out.Field(i).Set(v.Field(i))
 				continue
 			}
-			out.Field(i).Set(sanitizeTypedStrings(v.Field(i), g))
+			sanitizeTypedStrings(v.Field(i), g)
 		}
-		return out
 	case reflect.Slice:
 		if v.IsNil() {
-			return v
+			return
 		}
 		out := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+		reflect.Copy(out, v)
 		for i := range v.Len() {
-			out.Index(i).Set(sanitizeTypedStrings(v.Index(i), g))
+			sanitizeTypedStrings(out.Index(i), g)
 		}
-		return out
+		v.Set(out)
 	case reflect.Array:
-		out := reflect.New(v.Type()).Elem()
 		for i := range v.Len() {
-			out.Index(i).Set(sanitizeTypedStrings(v.Index(i), g))
+			sanitizeTypedStrings(v.Index(i), g)
 		}
-		return out
-	default:
-		return v
 	}
 }
 

@@ -437,8 +437,12 @@ func TestSanitizeEventCleansEveryTypedString(t *testing.T) {
 	var event Event
 	fillEveryString(reflect.ValueOf(&event).Elem(), secret)
 	event.Raw = map[string]interface{}{"note": secret}
+	before := mustJSON(t, event)
 
 	sanitized := SanitizeEvent(event, 1<<20)
+	if after := mustJSON(t, event); after != before {
+		t.Fatal("sanitizing an event changed the caller's typed fields")
+	}
 	data, err := json.Marshal(sanitized)
 	if err != nil {
 		t.Fatal(err)
@@ -472,6 +476,19 @@ func fillEveryString(v reflect.Value, text string) {
 	case reflect.Slice:
 		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
 		fillEveryString(v.Index(0), text)
+	case reflect.Array:
+		for i := range v.Len() {
+			fillEveryString(v.Index(i), text)
+		}
+	case reflect.Map:
+		v.Set(reflect.MakeMap(v.Type()))
+		key := reflect.New(v.Type().Key()).Elem()
+		if key.Kind() == reflect.String {
+			key.SetString("note")
+		}
+		value := reflect.New(v.Type().Elem()).Elem()
+		fillEveryString(value, text)
+		v.SetMapIndex(key, value)
 	case reflect.Interface:
 		v.Set(reflect.ValueOf(text))
 	}

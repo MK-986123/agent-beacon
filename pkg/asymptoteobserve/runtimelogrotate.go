@@ -64,6 +64,17 @@ func RuntimeLogNeedsRotation(path string, maxSize, nextWriteBytes int64) (bool, 
 // slot, so a gap left by a rotation that failed partway (a reader opened a file between the check
 // and its rename) is closed by the next rotation instead of costing an archive.
 func RotateRuntimeLog(path string, maxSize int64, archives int, nextWriteBytes int64) error {
+	return rotateRuntimeLog(path, maxSize, archives, nextWriteBytes, true)
+}
+
+// RotateFilePreservingMode rotates a single-writer file with the same bounded, gap-recovering
+// archive behavior as RotateRuntimeLog, but leaves every archive's mode unchanged. It is for
+// owner-private files whose permissions do not follow the endpoint runtime log's path-based mode.
+func RotateFilePreservingMode(path string, maxSize int64, archives int, nextWriteBytes int64) error {
+	return rotateRuntimeLog(path, maxSize, archives, nextWriteBytes, false)
+}
+
+func rotateRuntimeLog(path string, maxSize int64, archives int, nextWriteBytes int64, settleModes bool) error {
 	rotate, err := RuntimeLogNeedsRotation(path, maxSize, nextWriteBytes)
 	if err != nil || !rotate {
 		return err
@@ -116,7 +127,9 @@ func RotateRuntimeLog(path string, maxSize int64, archives int, nextWriteBytes i
 	if err := renameRuntimeLogFile(path, archive(1)); err != nil {
 		return err
 	}
-	SettleRuntimeLogArchives(path, archives)
+	if settleModes {
+		SettleRuntimeLogArchives(path, archives)
+	}
 	return nil
 }
 

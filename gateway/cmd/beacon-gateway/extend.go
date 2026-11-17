@@ -66,7 +66,9 @@ type SinkFactory func(node *yaml.Node, env Env) (pipeline.Sink, error)
 // jsonlSink is the built-in output: records appended to a local file, one JSON object per line.
 func jsonlSink(node *yaml.Node, _ Env) (pipeline.Sink, error) {
 	var cfg struct {
-		JSONL string `yaml:"jsonl"`
+		JSONL          string `yaml:"jsonl"`
+		RotateBytes    int64  `yaml:"rotate_bytes"`
+		RotateArchives int    `yaml:"rotate_archives"`
 	}
 	if err := node.Decode(&cfg); err != nil {
 		return nil, err
@@ -74,7 +76,19 @@ func jsonlSink(node *yaml.Node, _ Env) (pipeline.Sink, error) {
 	if cfg.JSONL == "" {
 		return nil, fmt.Errorf("a jsonl output needs a path (jsonl: <path>)")
 	}
-	s, err := sink.OpenJSONL(expandHome(cfg.JSONL))
+	if cfg.RotateBytes < 0 {
+		return nil, fmt.Errorf("rotate_bytes must not be negative")
+	}
+	if cfg.RotateArchives < 0 {
+		return nil, fmt.Errorf("rotate_archives must not be negative")
+	}
+	if cfg.RotateBytes == 0 {
+		cfg.RotateBytes = sink.DefaultRotateBytes
+	}
+	if cfg.RotateArchives == 0 {
+		cfg.RotateArchives = sink.DefaultRotateArchives
+	}
+	s, err := sink.OpenJSONLWithRotation(expandHome(cfg.JSONL), cfg.RotateBytes, cfg.RotateArchives)
 	if err != nil {
 		return nil, err
 	}

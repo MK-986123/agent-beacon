@@ -2,7 +2,7 @@
 // come only from the extension's own pages; content scripts run in the chat
 // site's renderer and must not be able to change settings or trigger a flush.
 import { describe, it, expect } from 'vitest';
-import { isExtensionPage, isOwnContentScript, senderHost } from '../../src/background/sender.js';
+import { isExtensionPage, isOwnContentScript, senderOrigin } from '../../src/background/sender.js';
 
 const ID = 'abcdefghijklmnopabcdefghijklmnop';
 const BASE = `chrome-extension://${ID}/`;
@@ -49,12 +49,13 @@ describe('isOwnContentScript', () => {
   });
 });
 
-describe('senderHost', () => {
-  it('reads the host from the browser-reported frame url', () => {
-    expect(senderHost({ url: 'https://chatgpt.com/c/123' })).toBe('chatgpt.com');
+describe('senderOrigin', () => {
+  it('reads the origin from the browser-reported frame url', () => {
+    expect(senderOrigin({ url: 'https://chatgpt.com/c/123' })).toBe('https://chatgpt.com');
   });
-  it('returns null without a usable url', () => {
-    expect(senderHost({})).toBeNull();
-    expect(senderHost({ url: 'nope' })).toBeNull();
+  it('returns null without an authenticated web origin', () => {
+    expect(senderOrigin({})).toBeNull();
+    expect(senderOrigin({ url: 'not a url' })).toBeNull();
+    expect(senderOrigin({ url: 'data:text/plain,hello' })).toBeNull();
   });
 });

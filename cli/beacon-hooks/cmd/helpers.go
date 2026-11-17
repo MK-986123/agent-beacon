@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -9,6 +12,11 @@ import (
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/logging"
 )
+
+// maxHookPayloadBytes is the transport boundary for runtime-controlled hook input. Plugin
+// serializers use the same ceiling, while direct runtime hooks are rejected here before a JSON
+// object graph or diff can be allocated from an oversized body.
+const maxHookPayloadBytes = 512 << 10
 
 // declaredPlatform is the --platform value this hook was invoked with, which names the runtime
 // whose configuration holds the hook entry. readStdinJSON may then switch platformFlag to the
@@ -21,13 +29,30 @@ var declaredPlatform string
 // provider; see cursorRecordsThisHook.
 var duplicateCursorRun bool
 
-// readStdinJSON decodes JSON from stdin into a map.
+// readStdinJSON reads one bounded JSON object from stdin.
 func readStdinJSON() (map[string]interface{}, error) {
 	declaredPlatform = platformFlag
 	duplicateCursorRun = false
 	relayedCloudRun := false
 	var input map[string]interface{}
-	err := json.NewDecoder(os.Stdin).Decode(&input)
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, maxHookPayloadBytes+1))
+	if err == nil && len(data) > maxHookPayloadBytes {
+		err = fmt.Errorf("hook payload exceeds %d bytes", maxHookPayloadBytes)
+	}
+	if err == nil {
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		err = decoder.Decode(&input)
+		if err == nil {
+			var trailing interface{}
+			if trailingErr := decoder.Decode(&trailing); trailingErr != io.EOF {
+				if trailingErr == nil {
+					err = fmt.Errorf("hook payload contains more than one JSON value")
+				} else {
+					err = fmt.Errorf("hook payload has invalid trailing data: %w", trailingErr)
+				}
+			}
+		}
+	}
 	if err == nil {
 		applyPayloadPlatformOverride(input)
 		duplicateCursorRun = declaredPlatform == "claude" && platformFlag == "cursor" && cursorRecordsThisHook(hookCommand, input)

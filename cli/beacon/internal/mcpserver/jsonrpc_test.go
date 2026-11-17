@@ -46,9 +46,16 @@ func TestJSONRPCEnvelope(t *testing.T) {
 			assertEnvelope(t, output.Bytes(), tc.wantID, tc.wantCode, tc.wantResult)
 		})
 		t.Run(tc.name+"/http", func(t *testing.T) {
-			server := httptest.NewServer(New(Options{}).HTTPHandler())
+			const token = "jsonrpc-test-launch-token"
+			server := httptest.NewServer(New(Options{}).HTTPHandler(token))
 			defer server.Close()
-			response, err := http.Post(server.URL+"/mcp", "application/json", strings.NewReader(tc.request))
+			request, err := http.NewRequest(http.MethodPost, server.URL+"/mcp", strings.NewReader(tc.request))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Bearer "+token)
+			response, err := http.DefaultClient.Do(request)
 			if err != nil {
 				t.Fatal(err)
 			}

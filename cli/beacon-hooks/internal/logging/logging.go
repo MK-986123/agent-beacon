@@ -48,27 +48,29 @@ func SuppressEndpointEvents(suppress bool) {
 
 // Logger provides structured JSON logging for hook events
 type Logger struct {
-	hookName  string
-	logFile   string
-	sessionID string
-	platform  string
+	hookName        string
+	logFile         string
+	sessionID       string
+	platform        string
+	diagnosticReady bool
 }
 
 // NewLoggerForPlatform creates a logger for a specific hook and platform
 func NewLoggerForPlatform(hookName, platform string) *Logger {
-	config.EnsureStateDir(platform)
-	return &Logger{hookName: hookName, logFile: config.GetLogFile(platform), platform: platform}
+	err := config.EnsureStateDir(platform)
+	return &Logger{hookName: hookName, logFile: config.GetLogFile(platform), platform: platform, diagnosticReady: err == nil}
 }
 
 // NewSessionLogger creates a logger that writes to a per-session log file.
 // Log file path: ~/.beacon/{platform}/logs/{session_id}.log
 func NewSessionLogger(hookName, platform, sessionID string) *Logger {
-	config.EnsureSessionLogDir(platform)
+	err := config.EnsureSessionLogDir(platform)
 	return &Logger{
-		hookName:  hookName,
-		logFile:   config.GetSessionLogFile(platform, sessionID),
-		sessionID: sessionID,
-		platform:  platform,
+		hookName:        hookName,
+		logFile:         config.GetSessionLogFile(platform, sessionID),
+		sessionID:       sessionID,
+		platform:        platform,
+		diagnosticReady: err == nil,
 	}
 }
 
@@ -95,12 +97,15 @@ func (l *Logger) formatEntry(level, message string, fields ...interface{}) map[s
 }
 
 func (l *Logger) write(entry map[string]interface{}) {
+	if !l.diagnosticReady {
+		return
+	}
 	data, err := json.Marshal(entry)
 	if err != nil {
 		return
 	}
 
-	f, err := os.OpenFile(l.logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := config.OpenPrivateFile(l.logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
 	if err != nil {
 		return
 	}

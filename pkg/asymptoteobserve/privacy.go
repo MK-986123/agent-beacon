@@ -498,6 +498,10 @@ func authorizationCredentialCopy(t, scheme string, end int) string {
 		return ""
 	}
 	credential := t[from:redactUnquotedEnd(t, from, redactValueStops)]
+	// This is the public JWT marker left by an earlier pass, not a copied credential.
+	if credential == "eyJ"+redactedValue {
+		return ""
+	}
 	if strings.Contains(strings.TrimRight(credential, "="), "=") || onlyASCIILetters(credential) {
 		return ""
 	}
@@ -1863,31 +1867,8 @@ func SanitizeEventWith(event Event, maxBytes int, opts EventSanitizeOptions) Eve
 	// keeps the established content and metadata limits, while this fallback protects fields such
 	// as error.type and any future typed string that has no dedicated sanitizer yet.
 	event = sanitizeEventTypedStrings(event, redact)
-	event.Message = CleanString(event.Message, DefaultStringLimit, redact)
 	if event.Tool != nil {
-		event.Tool.Command = CleanString(event.Tool.Command, DefaultStringLimit, redact)
 		event.Tool.Path = TruncateString(event.Tool.Path, DefaultRawStringLimit)
-	}
-	if event.Command != nil {
-		event.Command.Command = CleanString(event.Command.Command, DefaultStringLimit, redact)
-		event.Command.Output = CleanString(event.Command.Output, DefaultStringLimit, redact)
-	}
-	// Retained content the writers have always emitted but this function never
-	// saw, because the struct did not declare the fields. A diff or a block of
-	// command output is exactly the kind of text that carries a credential, so
-	// these get the same limit and the same secret redaction as prompt.text
-	// rather than a weaker one.
-	if event.File != nil {
-		event.File.Diff = CleanString(event.File.Diff, DefaultStringLimit, redact)
-	}
-	if event.Approval != nil {
-		event.Approval.Reason = CleanString(event.Approval.Reason, DefaultStringLimit, redact)
-	}
-	if event.Policy != nil {
-		event.Policy.Reason = CleanString(event.Policy.Reason, DefaultStringLimit, redact)
-	}
-	if event.Prompt != nil {
-		event.Prompt.Text = CleanString(event.Prompt.Text, DefaultStringLimit, redact)
 	}
 	// The run, vcs and top-level model, repository and branch strings come from the environment, a
 	// runtime's attributes or the repository's own refs (a pull request names its branch), so they

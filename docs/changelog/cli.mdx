@@ -13,6 +13,8 @@ Stay up to date with the latest changes to the Agent Beacon CLI.
 
 Changes on `main` since v1.3.61. They ship in the next release.
 
+- **macOS package installs require explicit log readers** · A first `.pkg` install no longer adds the console user to `beacon-log` merely because that account is running Apple's Installer.app. Some MDM installs omit the command-line marker, so an unrelated Installer.app session was not proof that the console user started Beacon's package transaction. macOS now adds only the accounts explicitly named by `BEACON_LOG_READERS`; an unset or empty value adds nobody. Restricted mode, explicit reader lists, upgrades, and the dashboard setting keep their existing behavior.
+
 ## November 2026
 
 ### v1.3.61 · November 13, 2026

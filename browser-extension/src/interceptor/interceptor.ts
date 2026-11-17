@@ -13,10 +13,16 @@
 // any page script runs, so a page script that later replaces JSON.stringify or
 // MessagePort.prototype.postMessage cannot read or rewrite what is sent.
 
-import type { InterceptEvent } from '../shared/types.js';
+import type { CaptureControl, InterceptEvent } from '../shared/types.js';
 import { looksLikeChatRequest } from '../adapters/adapter.js';
 import { offerChannel } from '../shared/channel.js';
+import { LIMITS } from '../shared/validate.js';
 import { captureRequestBody } from './request-body.js';
+
+interface ActiveCapture {
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  cancelled: boolean;
+}
 
 declare global {
   interface Window {
@@ -31,9 +37,24 @@ declare global {
   const apply = Reflect.apply;
   const stringify = JSON.stringify;
   const portPostMessage = MessagePort.prototype.postMessage;
+  const readerCancel = ReadableStreamDefaultReader.prototype.cancel;
   const randomId = makeRandomId();
   const originalFetch = window.fetch.bind(window);
   const port = offerChannel(window);
+  const captures = new Map<string, ActiveCapture>();
+  const cancelReader = (reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> =>
+    apply(readerCancel, reader, []) as Promise<void>;
+
+  port.onmessage = (event: MessageEvent) => {
+    const control = parseCaptureControl(event.data);
+    if (!control) return;
+    const capture = captures.get(control.reqId);
+    if (!capture) return;
+    capture.cancelled = true;
+    void cancelReader(capture.reader).catch(() => {
+      /* the reader already closed */
+    });
+  };
 
   function post(event: InterceptEvent): void {
     // A JSON string, so the receiving world parses it itself instead of
@@ -66,7 +87,7 @@ declare global {
       void body
         .then((text) => {
           post({ kind: 'request', reqId, url, method, body: text });
-          return teeStream(clone, reqId, post).catch((err) =>
+          return teeStream(clone, reqId, post, captures, cancelReader).catch((err) =>
             post({ kind: 'error', reqId, message: String(err).slice(0, 1024) }),
           );
         })
@@ -94,20 +115,57 @@ async function teeStream(
   response: Response,
   reqId: string,
   post: (e: InterceptEvent) => void,
+  captures: Map<string, ActiveCapture>,
+  cancelReader: (reader: ReadableStreamDefaultReader<Uint8Array>) => Promise<void>,
 ): Promise<void> {
   const reader = response.body!.getReader();
+  const capture: ActiveCapture = { reader, cancelled: false };
+  captures.set(reqId, capture);
   const decoder = new TextDecoder();
+  let capturedChars = 0;
+
+  const relay = (chunk: string): boolean => {
+    if (capturedChars + chunk.length > LIMITS.stream) return false;
+    capturedChars += chunk.length;
+    for (let start = 0; start < chunk.length; start += LIMITS.chunk) {
+      post({ kind: 'chunk', reqId, chunk: chunk.slice(start, start + LIMITS.chunk) });
+    }
+    return true;
+  };
+
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done || capture.cancelled) break;
       const chunk = decoder.decode(value, { stream: true });
-      if (chunk) post({ kind: 'chunk', reqId, chunk });
+      if (chunk && !relay(chunk)) {
+        capture.cancelled = true;
+        post({ kind: 'error', reqId, message: 'capture limit exceeded' });
+        await cancelReader(reader);
+        return;
+      }
     }
+    if (capture.cancelled) return;
     const tail = decoder.decode();
-    if (tail) post({ kind: 'chunk', reqId, chunk: tail });
-    post({ kind: 'done', reqId });
+    if (tail && !relay(tail)) {
+      post({ kind: 'error', reqId, message: 'capture limit exceeded' });
+      return;
+    }
+    if (!capture.cancelled) post({ kind: 'done', reqId });
   } finally {
+    if (captures.get(reqId) === capture) captures.delete(reqId);
     reader.releaseLock();
+  }
+}
+
+function parseCaptureControl(raw: unknown): CaptureControl | null {
+  if (typeof raw !== 'string') return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<CaptureControl>;
+    return parsed.kind === 'cancel' && typeof parsed.reqId === 'string'
+      ? { kind: 'cancel', reqId: parsed.reqId }
+      : null;
+  } catch {
+    return null;
   }
 }

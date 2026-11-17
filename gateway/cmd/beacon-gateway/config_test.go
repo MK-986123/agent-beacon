@@ -12,6 +12,7 @@ import (
 
 	"github.com/asymptote-labs/agent-beacon/gateway"
 	"github.com/asymptote-labs/agent-beacon/gateway/pipeline"
+	"github.com/asymptote-labs/agent-beacon/gateway/sink"
 	"github.com/asymptote-labs/agent-beacon/gateway/store"
 )
 
@@ -29,6 +30,31 @@ func parse(t *testing.T, text string) *config {
 }
 
 var env = Env{Log: slog.New(slog.DiscardHandler), Version: "test"}
+
+// Every JSONL route in the embedded no-config deployment has an explicit bounded-retention
+// contract, matching the sink's safe defaults.
+func TestDefaultConfigBoundsEveryJSONLOutput(t *testing.T) {
+	cfg, err := loadConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Outputs) != 2 {
+		t.Fatalf("default outputs = %d, want 2", len(cfg.Outputs))
+	}
+	for i := range cfg.Outputs {
+		var output struct {
+			JSONL          string `yaml:"jsonl"`
+			RotateBytes    int64  `yaml:"rotate_bytes"`
+			RotateArchives int    `yaml:"rotate_archives"`
+		}
+		if err := cfg.Outputs[i].Decode(&output); err != nil {
+			t.Fatal(err)
+		}
+		if output.JSONL == "" || output.RotateBytes != sink.DefaultRotateBytes || output.RotateArchives != sink.DefaultRotateArchives {
+			t.Errorf("outputs[%d] = %+v, want bounded JSONL defaults", i, output)
+		}
+	}
+}
 
 // Two jsonl outputs may not write one file, however the path is spelled.
 func TestOutputsShareNoFile(t *testing.T) {
@@ -79,14 +105,16 @@ func TestOpenBuild(t *testing.T) {
 		r.Sink.Close()
 	}
 	for text, want := range map[string]string{
-		"analyzers: {rules: {path: x}}": "analyzers.rules: no such analyzer",
-		"policy: {anything: 1}":         "policy: this build has no configurable policy",
-		"store: {type: shared}":         `unknown store "shared"`,
-		"observers: {calls: {}}":        "observers.calls: no such observer",
-		"content: {retention: some}":    "content.retention",
-		"outputs: [{type: ingest}]":     `outputs[0]: no such output "ingest"`,
-		"outputs: [{kinds: [finding]}]": "outputs[0]: no type",
-		"outputs: [{type: jsonl}]":      "a jsonl output needs a path",
+		"analyzers: {rules: {path: x}}":              "analyzers.rules: no such analyzer",
+		"policy: {anything: 1}":                      "policy: this build has no configurable policy",
+		"store: {type: shared}":                      `unknown store "shared"`,
+		"observers: {calls: {}}":                     "observers.calls: no such observer",
+		"content: {retention: some}":                 "content.retention",
+		"outputs: [{type: ingest}]":                  `outputs[0]: no such output "ingest"`,
+		"outputs: [{kinds: [finding]}]":              "outputs[0]: no type",
+		"outputs: [{type: jsonl}]":                   "a jsonl output needs a path",
+		"outputs: [{jsonl: x, rotate_bytes: -1}]":    "rotate_bytes must not be negative",
+		"outputs: [{jsonl: x, rotate_archives: -1}]": "rotate_archives must not be negative",
 	} {
 		cfg := parse(t, "gateways: [{type: litellm}]\n"+text+"\n")
 		_, aerr := cfg.analyzers(env)

@@ -71,23 +71,19 @@ if [ -z "$BEACON_LOG_ACCESS" ] && [ "$first_install" = 1 ]; then
   BEACON_LOG_ACCESS=restricted
 fi
 # Accounts to add to the beacon-log group of a restricted log, comma-separated. Set, even to nothing,
-# it is exactly the list: an MDM sets BEACON_LOG_READERS to an empty string so that nobody is ever
-# added implicitly. Unset, a first install that a person ran in Installer.app adds that person, so
-# whoever installed Beacon on their own Mac can use the dashboard, `beacon traces` and `beacon share`
-# without a second step. Members are only ever added, never removed.
+# it is exactly the list. Unset adds nobody on macOS: COMMAND_LINE_INSTALL is not set by every MDM,
+# and the presence of Installer.app is ambient process state that cannot be bound to this package
+# transaction. An administrator must therefore name every reader explicitly. Members are only ever
+# added, never removed.
 if [ -z "${BEACON_LOG_READERS+set}" ]; then
   BEACON_LOG_READERS=
-  if [ "$first_install" = 1 ] && [ "$BEACON_LOG_ACCESS" = restricted ]; then
-    BEACON_LOG_READERS="$(beacon_installing_person)"
-  fi
 fi
 # enabled or disabled: whether any account may run `beacon endpoint dashboard`. Empty keeps what the
 # endpoint already has, so a package upgrade never changes it. An unattended first install (an MDM,
-# `installer`, anything but a person in Installer.app, by the same test as BEACON_LOG_READERS above)
-# defaults to disabled: that install sets up the machine for the people who use it, who should not
-# be able to open a view of its telemetry unless the administrator says so. A person who installs
-# the package on their own Mac keeps the dashboard. BEACON_DASHBOARD=enabled or disabled decides
-# either way.
+# `installer`, anything but a person in Installer.app) defaults to disabled: that install sets up the
+# machine for the people who use it, who should not be able to open a view of its telemetry unless
+# the administrator says so. This ambient-process hint controls only the dashboard default and never
+# grants log access. BEACON_DASHBOARD=enabled or disabled decides either way.
 BEACON_DASHBOARD="${BEACON_DASHBOARD:-}"
 BEACON_DASHBOARD="$(printf '%s' "$BEACON_DASHBOARD" | tr -d '[:space:]')"
 if [ -z "$BEACON_DASHBOARD" ] && [ "$first_install" = 1 ] && [ -z "$(beacon_installing_person)" ]; then
@@ -134,9 +130,14 @@ esac
 if [ -n "$BEACON_SPLUNK_HEC_ENDPOINT" ]; then
   set -- "$@" --splunk-hec-endpoint "$BEACON_SPLUNK_HEC_ENDPOINT"
 fi
+# The CLI consumes these inherited descriptors before installing; tokens never enter child argv.
 if [ -n "$BEACON_SPLUNK_HEC_TOKEN" ]; then
-  set -- "$@" --splunk-hec-token "$BEACON_SPLUNK_HEC_TOKEN"
+  exec 3<<EOF
+$BEACON_SPLUNK_HEC_TOKEN
+EOF
+  set -- "$@" --splunk-hec-token-fd 3
 fi
+unset BEACON_SPLUNK_HEC_TOKEN
 if [ -n "$BEACON_SPLUNK_INDEX" ]; then
   set -- "$@" --splunk-index "$BEACON_SPLUNK_INDEX"
 fi
@@ -159,8 +160,12 @@ if [ -n "$BEACON_FALCON_HEC_ENDPOINT" ]; then
   set -- "$@" --falcon-hec-endpoint "$BEACON_FALCON_HEC_ENDPOINT"
 fi
 if [ -n "$BEACON_FALCON_HEC_TOKEN" ]; then
-  set -- "$@" --falcon-hec-token "$BEACON_FALCON_HEC_TOKEN"
+  exec 4<<EOF
+$BEACON_FALCON_HEC_TOKEN
+EOF
+  set -- "$@" --falcon-hec-token-fd 4
 fi
+unset BEACON_FALCON_HEC_TOKEN
 if [ -n "$BEACON_FALCON_INDEX" ]; then
   set -- "$@" --falcon-index "$BEACON_FALCON_INDEX"
 fi

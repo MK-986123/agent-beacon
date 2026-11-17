@@ -147,15 +147,17 @@ has_flag --session-sync && fail "preferences owned by someone else still set BEA
 printf 'BEACON_SPLUNK_HEC_TOKEN=(\n' >"$MANAGED.plist"
 run_install
 has_flag --splunk-hec-token && fail "an array value passed --splunk-hec-token"
+has_flag --splunk-hec-token-fd && fail "an array value passed --splunk-hec-token-fd"
 grep -q "ignoring BEACON_SPLUNK_HEC_TOKEN" "$TMP_DIR/out" || fail "array value: no warning naming the key"
 rm -f "$MANAGED.plist" "$LOCAL.plist"
 
-# Log readers: a first install a person ran in Installer.app adds them; `installer` (MDM, scripts)
-# adds nobody, even with someone logged in; BEACON_LOG_READERS, set even to nothing, is the list.
+# Log readers are never inferred from Installer.app: its presence is not bound to this package
+# transaction, and MDM InstallApplication may omit COMMAND_LINE_INSTALL. BEACON_LOG_READERS, set
+# even to nothing, is the complete list.
 run_install BEACON_CONSOLE_USER=alice
 has_flag --log-readers && fail "unattended install added $(flag_value --log-readers)"
 run_install BEACON_INSTALLER_GUI=1 BEACON_CONSOLE_USER=alice
-expect --log-readers alice "Installer.app first install"
+has_flag --log-readers && fail "Installer.app first install added $(flag_value --log-readers)"
 run_install BEACON_INSTALLER_GUI=1 BEACON_CONSOLE_USER=alice COMMAND_LINE_INSTALL=1
 has_flag --log-readers && fail "COMMAND_LINE_INSTALL install added $(flag_value --log-readers)"
 run_install BEACON_INSTALLER_GUI=1 BEACON_CONSOLE_USER=loginwindow
@@ -164,10 +166,12 @@ run_install BEACON_INSTALLER_GUI=1 BEACON_CONSOLE_USER=alice BEACON_LOG_ACCESS=s
 has_flag --log-readers && fail "shared install added a reader"
 # The CLI takes the mode in any case, so the script must too.
 run_install BEACON_INSTALLER_GUI=1 BEACON_CONSOLE_USER=alice BEACON_LOG_ACCESS=' Restricted '
-expect --log-readers alice "Installer.app first install with BEACON_LOG_ACCESS=Restricted"
+has_flag --log-readers && fail "restricted Installer.app first install added $(flag_value --log-readers)"
 expect --log-access restricted "BEACON_LOG_ACCESS=Restricted"
 run_install BEACON_INSTALLER_GUI=1 BEACON_CONSOLE_USER=alice BEACON_LOG_ACCESS=SHARED
 has_flag --log-readers && fail "BEACON_LOG_ACCESS=SHARED install added a reader"
+run_install BEACON_INSTALLER_GUI=1 BEACON_CONSOLE_USER=alice BEACON_LOG_READERS=alice
+expect --log-readers alice "explicit BEACON_LOG_READERS on an Installer.app first install"
 run_install BEACON_INSTALLER_GUI=1 BEACON_CONSOLE_USER=alice BEACON_LOG_READERS=
 has_flag --log-readers && fail "BEACON_LOG_READERS= still added the installing person"
 printf 'BEACON_LOG_READERS=\n' >"$MANAGED.plist"
@@ -183,8 +187,9 @@ run_install BEACON_INSTALLER_GUI=1 BEACON_CONSOLE_USER=alice
 has_flag --log-readers && fail "upgrade in Installer.app added the person implicitly"
 rm -f "$TMP_DIR/system/config.json"
 
-# Without the test override, Installer.app is recognized by the executable the kernel reports for an
-# Installer process the console user owns, never by the process name alone, which any account can use.
+# Without the test override, the Installer.app hint uses the executable the kernel reports for an
+# Installer process the console user owns, never the process name alone. The hint may preserve the
+# dashboard default, but even Apple's genuine executable never authorizes a log reader.
 PGREP_STUB="$TMP_DIR/pgrep"
 LSOF_STUB="$TMP_DIR/lsof"
 cat >"$PGREP_STUB" <<'STUB'
@@ -201,16 +206,20 @@ chmod 755 "$PGREP_STUB" "$LSOF_STUB"
 APPLE_INSTALLER=/System/Library/CoreServices/Installer.app/Contents/MacOS/Installer
 run_install BEACON_INSTALLER_GUI= BEACON_PGREP_BIN="$PGREP_STUB" BEACON_LSOF_BIN="$LSOF_STUB" \
   BEACON_CONSOLE_USER=alice BEACON_TEST_INSTALLER_USER=alice BEACON_TEST_INSTALLER_EXE="$APPLE_INSTALLER"
-expect --log-readers alice "Apple's Installer.app running as the console user"
+has_flag --log-readers && fail "Apple's Installer.app added $(flag_value --log-readers)"
+has_flag --dashboard && fail "Apple's Installer.app did not preserve the dashboard default"
 run_install BEACON_INSTALLER_GUI= BEACON_PGREP_BIN="$PGREP_STUB" BEACON_LSOF_BIN="$LSOF_STUB" \
   BEACON_CONSOLE_USER=alice BEACON_TEST_INSTALLER_USER=alice BEACON_TEST_INSTALLER_EXE=/Users/alice/bin/Installer
 has_flag --log-readers && fail "a program named Installer that is not Apple's added $(flag_value --log-readers)"
+expect --dashboard disabled "non-Apple Installer dashboard default"
 run_install BEACON_INSTALLER_GUI= BEACON_PGREP_BIN="$PGREP_STUB" BEACON_LSOF_BIN="$LSOF_STUB" \
   BEACON_CONSOLE_USER=alice BEACON_TEST_INSTALLER_USER=bob BEACON_TEST_INSTALLER_EXE="$APPLE_INSTALLER"
 has_flag --log-readers && fail "Installer.app running as another account added $(flag_value --log-readers)"
+expect --dashboard disabled "another account's Installer.app dashboard default"
 run_install BEACON_INSTALLER_GUI= BEACON_PGREP_BIN="$TMP_DIR/missing" BEACON_LSOF_BIN="$LSOF_STUB" \
   BEACON_CONSOLE_USER=alice BEACON_TEST_INSTALLER_USER=alice BEACON_TEST_INSTALLER_EXE="$APPLE_INSTALLER"
 has_flag --log-readers && fail "no pgrep: treated as Installer.app and added $(flag_value --log-readers)"
+expect --dashboard disabled "missing Installer process inspection tools"
 
 # The Fleet wrapper passes only the arguments it was given, so the managed preferences fill the rest
 # instead of being shadowed by its defaults.

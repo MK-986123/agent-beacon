@@ -68,6 +68,65 @@ describe('chatgpt adapter — existing conversation', () => {
   });
 });
 
+describe('chatgpt adapter — delta path safety', () => {
+  const line = (value: unknown) => `event: delta\ndata: ${JSON.stringify(value)}\n\n`;
+  const seed = {
+    o: 'add', p: '', c: 0,
+    v: { message: { id: 'safe', author: { role: 'assistant' }, content: { content_type: 'text', parts: ['safe'] } } },
+  };
+
+  it('rejects array indices that amplify a small delta into a sparse oversized message', () => {
+    const parser = chatgptAdapter.createParser('sparse-parts');
+    parser.onChunk([
+      seed,
+      { o: 'replace', p: '/message/content/parts/1000000', v: 'unsafe' },
+    ].map(line).join(''));
+    parser.onDone();
+    expect(parser.getTurn()!.responseText).toBe('safe');
+  });
+
+  it('bounds nested patch evaluation without interrupting ordinary deltas', () => {
+    const parser = chatgptAdapter.createParser('nested-patches');
+    parser.onChunk(line(seed));
+    const nested = '{"o":"patch","v":['.repeat(20_000) +
+      JSON.stringify({ o: 'replace', p: '/message/content/parts/0', v: 'unsafe' }) +
+      ']}'.repeat(20_000);
+    expect(() => parser.onChunk(`event: delta\ndata: ${nested}\n\n`)).not.toThrow();
+    parser.onChunk(line({ o: 'append', p: '/message/content/parts/0', v: ' answer' }));
+    parser.onDone();
+    expect(parser.getTurn()!.responseText).toBe('safe answer');
+  });
+
+  it('rejects prototype segments in replace, append, remove, and nested patch operations', () => {
+    const parser = chatgptAdapter.createParser('prototype-paths');
+    const inherited = { untouched: true };
+    Object.defineProperty(Object.prototype, 'beaconInherited', { value: inherited, configurable: true });
+    try {
+      parser.onChunk([
+        seed,
+        { o: 'replace', p: '/__proto__/beaconRetention', v: 'full' },
+        { o: 'append', p: '/constructor/prototype/beaconEnabled', v: true },
+        { o: 'remove', p: '/__proto__/beaconInherited' },
+        { o: 'patch', p: '', v: [{ o: 'replace', p: '/constructor/prototype/beaconSites', v: {} }] },
+        { o: 'replace', p: '/beaconInherited/untouched', v: false },
+      ].map(line).join(''));
+      parser.onDone();
+
+      expect(Object.hasOwn(Object.prototype, 'beaconRetention')).toBe(false);
+      expect(Object.hasOwn(Object.prototype, 'beaconEnabled')).toBe(false);
+      expect(Object.hasOwn(Object.prototype, 'beaconSites')).toBe(false);
+      expect(Object.hasOwn(Object.prototype, 'beaconInherited')).toBe(true);
+      expect(inherited.untouched).toBe(true);
+      expect(parser.getTurn()!.responseText).toBe('safe');
+    } finally {
+      Reflect.deleteProperty(Object.prototype, 'beaconRetention');
+      Reflect.deleteProperty(Object.prototype, 'beaconEnabled');
+      Reflect.deleteProperty(Object.prototype, 'beaconSites');
+      Reflect.deleteProperty(Object.prototype, 'beaconInherited');
+    }
+  });
+});
+
 // web-search-split.sse follows the op pattern of an October 2026 chatgpt.com
 // turn (sanitized and shortened): an answer interrupted by a web.run search.
 // Each delta's `c` names the message it applies to, and the ops for the answer

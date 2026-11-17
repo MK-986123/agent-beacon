@@ -8,6 +8,7 @@ package mcpserver
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -169,7 +170,10 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 	return nil
 }
 
-func (s *Server) HTTPHandler() http.Handler {
+// HTTPHandler serves the loopback HTTP transport. token is the current run's launch secret;
+// every request to /mcp must carry it as a Bearer credential. /health stays public because it
+// exposes no endpoint data and is useful for local readiness checks.
+func (s *Server) HTTPHandler(token string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -178,7 +182,7 @@ func (s *Server) HTTPHandler() http.Handler {
 		}
 		writeHTTPJSON(w, map[string]string{"status": "ok"})
 	})
-	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+	mcp := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeHTTPError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
@@ -195,7 +199,32 @@ func (s *Server) HTTPHandler() http.Handler {
 		}
 		writeHTTPJSON(w, response)
 	})
+	mux.Handle("/mcp", requireBearerToken(token, mcp))
 	return mux
+}
+
+// requireBearerToken rejects a request before JSON-RPC parsing unless it carries exactly one
+// Authorization header with the current run's secret. In particular, query parameters, cookies,
+// other authorization schemes, and credentials retained from an earlier run do not authorize a
+// caller that can merely reach the loopback port.
+func requireBearerToken(token string, next http.Handler) http.Handler {
+	want := []byte(token)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		values := r.Header.Values("Authorization")
+		if len(values) == 1 {
+			scheme, credential, ok := strings.Cut(values[0], " ")
+			credential = strings.TrimLeft(credential, " ")
+			if ok && strings.EqualFold(scheme, "Bearer") && credential != "" &&
+				!strings.ContainsAny(credential, " \t\r\n") && len(want) > 0 &&
+				subtle.ConstantTimeCompare([]byte(credential), want) == 1 {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer realm="beacon-mcp"`)
+		w.Header().Set("Cache-Control", "no-store")
+		writeHTTPError(w, http.StatusUnauthorized, "missing or invalid bearer token")
+	})
 }
 
 func (s *Server) handle(ctx context.Context, data []byte) (rpcResponse, bool) {

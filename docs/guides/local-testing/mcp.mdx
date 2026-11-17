@@ -86,10 +86,14 @@ Beacon reads the same local `runtime.jsonl` used by the [dashboard](/cli/dashboa
 beacon mcp serve
 ```
 
-Use stdio for desktop MCP clients that launch Beacon as a subprocess. Use HTTP only for local loopback testing or local tools that connect to a running server.
+Use stdio for desktop MCP clients that launch Beacon as a subprocess. Use HTTP only for local
+loopback testing or local tools that connect to a running server. An HTTP run prints a fresh
+`Authorization: Bearer ...` credential; configure the client to send that complete header with
+every `/mcp` request. `/health` remains available without the credential.
 
 <Warning>
-  Do not expose `beacon mcp serve --transport http` on a non-loopback interface. Beacon MCP is designed for local activity inspection, not remote administration.
+  Keep `beacon mcp serve --transport http` on loopback and protect its printed credential.
+  Loopback alone does not distinguish local accounts.
 </Warning>
 
 ## Security use cases

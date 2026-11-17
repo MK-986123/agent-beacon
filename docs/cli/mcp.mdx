@@ -17,7 +17,8 @@ beacon mcp [command]
 The server reads the same local runtime log used by the [dashboard](/cli/dashboard)
 and the local `memory.db` store next to the endpoint log base directory. It
 supports stdio for desktop MCP clients and loopback HTTP JSON-RPC for local tools
-that connect to a running server.
+that connect to a running server. Each HTTP run prints a fresh Bearer credential that the
+client must send with `/mcp` requests; `/health` remains available for readiness checks.
 
 ## Local and Beacon Cloud servers
 
@@ -109,9 +110,9 @@ see [`beacon mcp connect`](/cli/mcp-connect#flags).
 <Note>
   `beacon mcp serve` and `beacon mcp doctor` only read local Beacon runtime logs and
   approved local memory. They do not require a Beacon account, and HTTP transport
-  should remain bound to loopback. `beacon mcp connect` is the one `beacon mcp`
-  command that makes a network request: an opt-in check of the Beacon Cloud MCP
-  URL before it writes harness configs.
+  should remain bound to loopback with its per-run credential protected. `beacon mcp connect`
+  is the one `beacon mcp` command that makes a network request: an opt-in check of the Beacon
+  Cloud MCP URL before it writes harness configs.
 </Note>
 
 ## Related
